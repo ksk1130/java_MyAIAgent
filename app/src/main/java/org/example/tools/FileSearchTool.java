@@ -22,12 +22,27 @@ public class FileSearchTool {
 
     private static final int MAX_RESULTS = 1000;
 
+    /**
+     * JSON 文字列として安全に扱えるように文字列をエスケープします。
+     *
+     * @param s 変換対象文字列
+     * @return エスケープ済み文字列
+     */
     private static String escapeJson(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r");
     }
 
+    /**
+     * 指定ディレクトリ配下から glob パターンに一致するファイルを検索します。
+     *
+     * @param rootDir 検索ルートディレクトリ
+     * @param fileNamePattern ファイル名 glob パターン
+     * @return JSON 形式の検索結果、またはエラーメッセージ
+     */
     @Tool
     public String findFiles(String rootDir, String fileNamePattern) {
+        System.out.println("FileSearchツールを実行します");
+        System.out.flush();
         try {
             Path root = Path.of(rootDir).toAbsolutePath().normalize();
             if (!Files.exists(root) || !Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {

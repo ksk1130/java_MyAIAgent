@@ -22,8 +22,7 @@
             "name": "ChatCLI",
             "request": "launch",
             "mainClass": "org.example.ChatCLI",
-            "projectName": "app",
-            "args": ["chat"]
+            "projectName": "app"
         }
     ]
 }

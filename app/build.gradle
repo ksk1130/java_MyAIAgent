@@ -34,6 +34,9 @@ dependencies {
 
     // Provide a simple SLF4J binding so LangChain4j logs are visible
     runtimeOnly 'org.slf4j:slf4j-simple:2.0.7'
+
+    // JLine3: 対話型CLIサポート（行編集・入力履歴・Ctrl+C/D対応）
+    implementation libs.jline
 }
 
 // Apply a specific Java toolchain to ease working on different environments.

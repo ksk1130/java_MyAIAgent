@@ -22,8 +22,17 @@ public class InteractiveFileSearchTool {
     private static final int MAX_RESULTS = 1000;
     private static final int MAX_READS = 5;
 
+    /**
+     * 指定ディレクトリ配下からファイルを検索し、ユーザ選択後に内容を返します。
+     *
+     * @param rootDir 検索ルートディレクトリ
+     * @param fileNamePattern ファイル名 glob パターン
+     * @return 選択ファイルの内容、またはエラーメッセージ
+     */
     @Tool
     public String interactiveFindAndRead(String rootDir, String fileNamePattern) {
+        System.out.println("InteractiveFileSearchツールを実行します");
+        System.out.flush();
         try {
             Path root = Path.of(rootDir).toAbsolutePath().normalize();
             if (!Files.exists(root) || !Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) {

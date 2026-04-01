@@ -32,8 +32,16 @@ public class FileReaderTool {
     // 代替エンコーディング（Windows 環境の SJIS 互換）
     private static final Charset SHIFT_JIS = Charset.forName("Windows-31J");
 
+    /**
+     * テキストファイルを読み込み、内容を返します。
+     *
+     * @param path 読み込むファイルパス
+     * @return ファイル内容、またはエラーメッセージ
+     */
     @Tool
     public String readFile(String path) {
+        System.out.println("FileReaderツールを実行します");
+        System.out.flush();
         try {
             Path p = Path.of(path).toAbsolutePath().normalize();
 
@@ -70,6 +78,14 @@ public class FileReaderTool {
         }
     }
 
+    /**
+     * 指定文字コードでバイト列をデコードします。
+     *
+     * @param bytes デコード対象のバイト列
+     * @param charset 使用する文字コード
+     * @return デコード結果
+     * @throws CharacterCodingException デコードできない場合
+     */
     private static String decode(byte[] bytes, Charset charset) throws CharacterCodingException {
         CharsetDecoder decoder = charset.newDecoder()
                 .onMalformedInput(CodingErrorAction.REPORT)
@@ -79,6 +95,12 @@ public class FileReaderTool {
         return cb.toString();
     }
 
+    /**
+     * ファイルパスから拡張子を取得します。
+     *
+     * @param p 対象パス
+     * @return 拡張子。存在しない場合は null
+     */
     private static String getExtension(Path p) {
         String name = p.getFileName().toString();
         int idx = name.lastIndexOf('.');
