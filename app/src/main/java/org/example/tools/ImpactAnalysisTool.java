@@ -10,7 +10,6 @@ import java.nio.file.Paths;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -55,6 +54,30 @@ public class ImpactAnalysisTool {
      */
     @Tool
     public String analyzeTableImpact(String tableName) {
+        return analyzeTableImpactInternal(tableName, null);
+    }
+
+    /**
+     * テーブル名と探索ルートから影響候補ファイルを推移的に列挙します。
+     * rootDir が相対パスの場合は user.dir 基準で解決します。
+     *
+     * @param tableName 変更されたテーブル名（例: dummy_table）
+     * @param rootDir 探索ルートディレクトリ（絶対/相対）
+     * @return 影響候補のレポート
+     */
+    @Tool
+    public String analyzeTableImpactInRoot(String tableName, String rootDir) {
+        return analyzeTableImpactInternal(tableName, rootDir);
+    }
+
+    /**
+     * 影響分析の共通本体です。
+     *
+     * @param tableName 変更されたテーブル名
+     * @param rootDir 探索ルートディレクトリ（null/blank で user.dir）
+     * @return 影響候補のレポート
+     */
+    private String analyzeTableImpactInternal(String tableName, String rootDir) {
         System.out.println("ImpactAnalysisツールを実行します");
         System.out.flush();
 
@@ -63,7 +86,11 @@ public class ImpactAnalysisTool {
         }
 
         String normalizedTable = tableName.strip().toLowerCase(Locale.ROOT);
-        Path workspaceRoot = Paths.get(System.getProperty("user.dir"));
+        Path workspaceRoot = resolveRootDirectory(rootDir);
+        if (workspaceRoot == null) {
+            return "ERROR: invalid rootDir (directory not found): " + rootDir;
+        }
+
         List<Path> sourceFiles = listSupportedSourceFiles(workspaceRoot);
         if (sourceFiles.isEmpty()) {
             return "ERROR: no supported source files found (*.java/*.cbl/*.cob/*.cpy)";
@@ -125,6 +152,30 @@ public class ImpactAnalysisTool {
         }
 
         return sb.toString().trim();
+    }
+
+    /**
+     * 探索ルートディレクトリを解決します。
+     *
+     * @param rootDir 入力ルート
+     * @return 解決済みルート。無効な場合は null
+     */
+    private static Path resolveRootDirectory(String rootDir) {
+        Path base = Paths.get(System.getProperty("user.dir"));
+        Path candidate;
+
+        if (rootDir == null || rootDir.isBlank()) {
+            candidate = base;
+        } else {
+            Path raw = Paths.get(rootDir.strip());
+            candidate = raw.isAbsolute() ? raw : base.resolve(raw);
+        }
+
+        Path normalized = candidate.normalize();
+        if (!Files.isDirectory(normalized)) {
+            return null;
+        }
+        return normalized;
     }
 
     /**

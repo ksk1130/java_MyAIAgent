@@ -110,7 +110,7 @@ AiServices に登録済み（LLM が Function Calling で呼び出し可能）:
 | クラス | 説明 |
 |---|---|
 | `LocalCommandTool` | LLM が生成した読み取り専用コマンドを `pwsh` で実行します。`rg`・`Select-String`・`findstr`・`dir`・`ls`・`git status/log/show/diff/branch` などを想定。禁止操作パターン (`rm`, `del`, `git reset` 等) はブロックし、実行前に承認を要求します。 |
-| `ImpactAnalysisTool` | テーブル名変更時の影響範囲を推移的に推定します。SQL 参照シンボルを起点に、Java/COBOL の参照を逆方向へたどって影響候補ファイルを列挙します。 |
+| `ImpactAnalysisTool` | テーブル名変更時の影響範囲を推移的に推定します。SQL 参照シンボルを起点に、Java/COBOL の参照を逆方向へたどって影響候補ファイルを列挙します。`analyzeTableImpact(table)` に加え、`analyzeTableImpactInRoot(table, rootDir)` で探索ルート指定も可能です。 |
 | `FileReaderTool` | 拡張子ホワイトリスト方式でテキストファイルを読み込みます。UTF-8 → Shift_JIS の順でデコードを試みます。 |
 | `FileWriterTool` | 拡張子ホワイトリスト方式でテキストファイルを書き込みます。親ディレクトリ自動作成、UTF-8 で保存します。 |
 | `Calculator` | 加算・平方根など数値計算のサンプルツール。 |
@@ -151,6 +151,7 @@ ChatCLI#runChat()
            │      出力上限 12,000 文字 / タイムアウト 20 秒
            │
            ├─ ImpactAnalysisTool#analyzeTableImpact()
+           │      （任意）ImpactAnalysisTool#analyzeTableImpactInRoot(table, rootDir)
            │      テーブル名を起点に SQL 参照クラスを検出
            │      Java/COBOL の呼び出し元を逆方向にたどって推移影響を列挙
            │
