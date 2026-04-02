@@ -583,22 +583,38 @@ public class ChatCLI {
                     .parser(buildInputParser())
                     .variable(LineReader.HISTORY_FILE,
                             Paths.get(System.getProperty("user.home"), ".ai_history"))
+                    .variable(LineReader.SECONDARY_PROMPT_PATTERN, "> ")
+                    .option(LineReader.Option.INSERT_TAB, true)
                     .build();
 
             PrintWriter writer = terminal.writer();
             writer.println("=== AI Assistant (Ctrl+D or 'exit' to quit) ===");
+            writer.println("(入力方法: Enter で改行、Ctrl+D で送信。空の状態で Ctrl+D は終了)");
             writer.flush();
 
+            StringBuilder inputBuffer = new StringBuilder();
             while (true) {
                 String userMessage;
                 try {
-                    userMessage = lineReader.readLine(userPromptLabel(colorEnabled));
+                    String prompt = inputBuffer.length() == 0 ? userPromptLabel(colorEnabled)
+                            : ANSI_BRIGHT_BLACK + "... " + ANSI_RESET;
+                    userMessage = lineReader.readLine(prompt);
+                    if (inputBuffer.length() > 0) {
+                        inputBuffer.append('\n');
+                    }
+                    inputBuffer.append(userMessage);
+                    continue;
                 } catch (UserInterruptException e) {
                     // Ctrl+C: 入力キャンセル、次の入力へ
+                    inputBuffer.setLength(0);
                     continue;
                 } catch (EndOfFileException e) {
-                    // Ctrl+D / EOF: 終了
-                    break;
+                    if (inputBuffer.length() == 0) {
+                        // 空入力で Ctrl+D / EOF: 終了
+                        break;
+                    }
+                    userMessage = inputBuffer.toString();
+                    inputBuffer.setLength(0);
                 }
 
                 Optional<String> normalizedUserMessage = normalizeInput(userMessage);
@@ -627,6 +643,8 @@ public class ChatCLI {
                         continue;
                     }
                 }
+
+                final String messageToSend = normalizedMessage;
 
                 try {
                     if (localCommandTool.hasPendingCommand()) {
@@ -670,7 +688,7 @@ public class ChatCLI {
 
                     // 通常は LLM(Function Calling) を優先してツール選択させる
                         String aiResponse = withSpinner(writer, AI_THINKING_LABEL,
-                    () -> runAgentStepLoop(assistant, normalizedMessage));
+                    () -> runAgentStepLoop(assistant, messageToSend));
                     writer.println(aiLabel(colorEnabled));
                     writer.println(renderWithSyntaxHighlight(aiResponse, colorEnabled));
                     writer.flush();
