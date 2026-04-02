@@ -17,7 +17,7 @@ public class Calculator {
      */
     @Tool
     public double add(int a, int b) {
-        System.out.println("Calculatorツールを実行します");
+        System.out.println("Calculatorツールを実行します: add(a=" + a + ", b=" + b + ")");
         System.out.flush();
         return a + b;
     }
@@ -30,7 +30,7 @@ public class Calculator {
      */
     @Tool
     public double squareRoot(double x) {
-        System.out.println("Calculatorツールを実行します");
+        System.out.println("Calculatorツールを実行します: squareRoot(x=" + x + ")");
         System.out.flush();
         return Math.sqrt(x);
     }

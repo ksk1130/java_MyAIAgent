@@ -42,7 +42,8 @@ public class FileWriterTool {
      */
     @Tool
     public String writeFile(String path, String content) {
-        System.out.println("FileWriterツールを実行します");
+        int contentLength = content == null ? 0 : content.length();
+        System.out.println("FileWriterツールを実行します: writeFile(path=" + path + ", contentLength=" + contentLength + ")");
         System.out.flush();
 
         if (path == null || path.isBlank()) {

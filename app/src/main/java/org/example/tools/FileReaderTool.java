@@ -40,7 +40,7 @@ public class FileReaderTool {
      */
     @Tool
     public String readFile(String path) {
-        System.out.println("FileReaderツールを実行します");
+        System.out.println("FileReaderツールを実行します: readFile(path=" + path + ")");
         System.out.flush();
         try {
             Path p = Path.of(path).toAbsolutePath().normalize();

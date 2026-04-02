@@ -35,7 +35,7 @@ public class GrepTool {
      */
     @Tool
     public String grep(String rootDir, String keyword) {
-        System.out.println("Grepツールを実行します");
+        System.out.println("Grepツールを実行します: grep(rootDir=" + rootDir + ", keyword=" + keyword + ")");
         System.out.flush();
 
         return grepInternal(rootDir, keyword, null, "Grep");
@@ -51,7 +51,7 @@ public class GrepTool {
      */
     @Tool
     public String grepJavaFiles(String rootDir, String keyword) {
-        System.out.println("GrepJavaFilesツールを実行します");
+        System.out.println("GrepJavaFilesツールを実行します: grepJavaFiles(rootDir=" + rootDir + ", keyword=" + keyword + ")");
         System.out.flush();
 
         return grepInternal(rootDir, keyword, "glob:**/*.java", "GrepJavaFiles");

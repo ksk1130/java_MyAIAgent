@@ -41,7 +41,7 @@ public class FileSearchTool {
      */
     @Tool
     public String findFiles(String rootDir, String fileNamePattern) {
-        System.out.println("FileSearchツールを実行します");
+        System.out.println("FileSearchツールを実行します: findFiles(rootDir=" + rootDir + ", pattern=" + fileNamePattern + ")");
         System.out.flush();
         try {
             Path root = Path.of(rootDir).toAbsolutePath().normalize();

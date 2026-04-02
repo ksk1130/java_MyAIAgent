@@ -31,7 +31,7 @@ public class InteractiveFileSearchTool {
      */
     @Tool
     public String interactiveFindAndRead(String rootDir, String fileNamePattern) {
-        System.out.println("InteractiveFileSearchツールを実行します");
+        System.out.println("InteractiveFileSearchツールを実行します: interactiveFindAndRead(rootDir=" + rootDir + ", pattern=" + fileNamePattern + ")");
         System.out.flush();
         try {
             Path root = Path.of(rootDir).toAbsolutePath().normalize();

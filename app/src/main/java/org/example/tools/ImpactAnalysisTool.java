@@ -78,7 +78,7 @@ public class ImpactAnalysisTool {
      * @return 影響候補のレポート
      */
     private String analyzeTableImpactInternal(String tableName, String rootDir) {
-        System.out.println("ImpactAnalysisツールを実行します");
+        System.out.println("ImpactAnalysisツールを実行します: analyze(tableName=" + tableName + ", rootDir=" + rootDir + ")");
         System.out.flush();
 
         if (tableName == null || tableName.isBlank()) {

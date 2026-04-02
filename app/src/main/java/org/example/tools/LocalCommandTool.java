@@ -35,16 +35,13 @@ public class LocalCommandTool {
      */
     @Tool
     public String runSearchCommand(String command) {
-        System.out.println("LocalCommandツールを実行します");
-        System.out.flush();
-
         if (command == null || command.isBlank()) {
             return "ERROR: command is required";
         }
 
         String trimmed = command.trim();
         String singleLineCommand = trimmed.replace("\r", " ").replace("\n", " ");
-        System.out.println("提案コマンド: " + singleLineCommand);
+        System.out.println("LocalCommandツールを実行します: runSearchCommand(command=" + singleLineCommand + ")");
         System.out.flush();
 
         if (trimmed.length() > MAX_COMMAND_LENGTH) {
@@ -98,8 +95,7 @@ public class LocalCommandTool {
         pendingCommand = null;
         String singleLineCommand = commandToRun.replace("\r", " ").replace("\n", " ");
 
-        System.out.println("LocalCommandツールを実行します");
-        System.out.println("実行コマンド: " + singleLineCommand);
+        System.out.println("LocalCommandツールを実行します: executePendingCommand(command=" + singleLineCommand + ")");
         System.out.flush();
 
         return executeCommand(commandToRun, singleLineCommand);
