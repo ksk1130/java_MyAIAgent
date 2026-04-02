@@ -27,6 +27,7 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 import java.nio.file.Paths;
+import java.nio.file.Files;
 import java.util.List;
 import java.util.ArrayList;
 import java.nio.file.Path;
@@ -50,6 +51,7 @@ public class ChatCLI {
     private static final String ANSI_CYAN = "\u001B[36m";
     private static final String ANSI_BLUE_BOLD = "\u001B[1;34m";
     private static final String EXIT_COMMAND = "exit";
+    private static final String CLEAR_HISTORY_COMMAND = "/clear";
     private static final String SELECTION_ALL = "all";
     private static final String SELECTION_NONE = "none";
     private static final String SELECTION_CANCEL = "cancel";
@@ -607,6 +609,23 @@ public class ChatCLI {
 
                 if (EXIT_COMMAND.equalsIgnoreCase(normalizedMessage)) {
                     break;
+                }
+
+                // 履歴クリアコマンド
+                if (CLEAR_HISTORY_COMMAND.equalsIgnoreCase(normalizedMessage)) {
+                    try {
+                        chatMemory.clear();
+                        Path historyFile = Paths.get(System.getProperty("user.home"), ".ai_history");
+                        Files.deleteIfExists(historyFile);
+                        writer.println(aiLabel(colorEnabled));
+                        writer.println("✓ 会話履歴と入力履歴をクリアしました");
+                        writer.flush();
+                        continue;
+                    } catch (Exception e) {
+                        writer.println("[ERROR] 履歴クリア中にエラーが発生しました: " + e.getMessage());
+                        writer.flush();
+                        continue;
+                    }
                 }
 
                 try {
