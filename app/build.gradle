@@ -53,3 +53,158 @@ application {
     // Ensure JVM uses UTF-8 file.encoding so console output (Japanese) doesn't mojibake on Windows
     applicationDefaultJvmArgs = ['-Dfile.encoding=UTF-8']
 }
+
+// ----- Distribution tasks (jlink + jpackage) copied and adapted from JFX_PasswordManager -----
+
+def osArch = System.getProperty('os.arch', '').toLowerCase()
+def isArm64 = osArch.contains('aarch64') || osArch.contains('arm64')
+
+tasks.register('createMinimalJRE', Exec) {
+    description = 'Create minimal JRE with jlink for smaller footprint'
+    group = 'distribution'
+
+    // Compute paths and settings at configuration time to be configuration-cache safe
+    def buildDirPath = project.buildDir
+    def jreOutputDir = file("$buildDirPath/jre-minimal")
+    def baseModules = 'java.base,jdk.crypto.ec,java.logging,jdk.unsupported,java.net.http'
+    def modules = baseModules
+    def javaHome = System.getenv('JAVA_HOME') ?: System.getProperty('java.home')
+    if (!javaHome) {
+        throw new GradleException('JAVA_HOME environment variable not set')
+    }
+    def jmodsPath = file(new File(javaHome, 'jmods').absolutePath)
+    if (!jmodsPath.exists()) {
+        throw new GradleException("jmods directory not found at: ${jmodsPath.absolutePath}")
+    }
+
+    // Configure the Exec task to run jlink
+    executable = new File(javaHome, 'bin/jlink.exe').absolutePath
+    args = [
+        '--module-path', jmodsPath.absolutePath,
+        '--add-modules', modules,
+        '--output', jreOutputDir.absolutePath,
+        '--compress', '2',
+        '--strip-debug',
+        '--no-header-files',
+        '--no-man-pages'
+    ]
+
+    doFirst {
+        if (jreOutputDir.exists()) {
+            logger.lifecycle("Removing existing JRE directory...")
+            jreOutputDir.deleteDir()
+        }
+        jreOutputDir.parentFile.mkdirs()
+        logger.lifecycle("Creating minimal JRE with jlink...")
+        logger.lifecycle("Modules: ${modules}")
+        logger.lifecycle("Using jmods from: ${jmodsPath.absolutePath}")
+        logger.lifecycle("Output directory: ${jreOutputDir.absolutePath}")
+    }
+
+    doLast {
+        logger.lifecycle('✓ Minimal JRE created successfully')
+    }
+}
+
+tasks.register('prepareJPackageInput', Copy) {
+    description = 'Prepare input directory for jpackage'
+    group = 'distribution'
+    dependsOn tasks.named('jar')
+    into("$buildDir/package-input")
+
+    // Copy the built jar and runtime dependencies into package-input (use providers to be configuration-cache safe)
+    from(tasks.named('jar').flatMap { it.archiveFile }) {
+        into '.'
+    }
+    from(configurations.runtimeClasspath)
+
+    def packageInputPath = "${project.buildDir.absolutePath}/package-input"
+
+    doLast {
+        logger.lifecycle("✓ jpackage input prepared: ${packageInputPath}")
+    }
+}
+
+tasks.register('createPortablePackage') {
+    description = 'Create portable app package with JRE (batch launcher)'
+    group = 'distribution'
+    dependsOn tasks.named('build'), tasks.named('createMinimalJRE'), tasks.named('prepareJPackageInput')
+
+    def buildDirPath = project.buildDir.absolutePath
+    def packageInputDir = file("$buildDirPath/package-input")
+    def jreOutputDir = file("$buildDirPath/jre-minimal")
+    def appPackageDir = file("$buildDirPath/distribution/app")
+    def libDir = file("$appPackageDir/lib")
+    def jreDir = file("$appPackageDir/jre")
+
+    doLast {
+        logger.lifecycle('Creating portable app package...')
+        appPackageDir.mkdirs()
+        libDir.mkdirs()
+        logger.lifecycle("Output directory: ${appPackageDir.absolutePath}")
+
+        // Copy JAR files
+        logger.lifecycle('Copying JAR files...')
+        packageInputDir.listFiles()?.each { file ->
+            if (file.name.endsWith('.jar')) {
+                java.nio.file.Files.copy(
+                    file.toPath(),
+                    new File(libDir, file.name).toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                )
+            }
+        }
+
+        // Copy JRE
+        logger.lifecycle('Copying JRE (this may take a moment)...')
+        ant.copy(todir: jreDir, overwrite: true) {
+            fileset(dir: jreOutputDir)
+        }
+
+        // Create launcher script
+        def runBat = new File(appPackageDir, 'run.bat')
+        def batContent = new File(projectDir, 'scripts/run.bat').text
+        runBat.text = batContent
+        logger.lifecycle("✓ Launcher script created: ${runBat.absolutePath}")
+
+        // Create README
+        def readmeTxt = new File(appPackageDir, 'README.txt')
+        def readmeContent = new File(projectDir, 'scripts/README.txt').text
+        readmeTxt.text = readmeContent
+        logger.lifecycle("✓ README created: ${readmeTxt.absolutePath}")
+
+        logger.lifecycle("""
+========================================
+✓ ポータブルパッケージ作成完了
+========================================
+出力先: ${appPackageDir.absolutePath}
+起動方法: run.bat をダブルクリック、または cmd で run.bat を実行
+========================================
+""")
+    }
+}
+
+task printDistributionInfo {
+    description = 'Show distribution package information'
+    group = 'distribution'
+    doLast {
+        println """
+配布用パッケージ作成タスク:
+    gradle createPortablePackage : ポータブル版パッケージ作成（JRE同梱、run.bat起動）
+
+実行例:
+    gradle createPortablePackage
+
+出力先:
+    build/distribution/app/
+
+特徴:
+    - run.bat でアプリケーション起動（JRE 同梱）
+    - インストール不要でそのまま実行可能
+    - jlink で生成された最小限の JRE
+    - 不要なモジュール/ドキュメントを除外
+    - フットプリント最小化
+""".stripIndent()
+    }
+}
+

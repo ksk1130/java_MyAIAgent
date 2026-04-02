@@ -51,6 +51,24 @@ $env:CHAT_AGENT_MAX_STEPS = "5"
 .\gradlew.bat :app:build -x test
 ```
 
+## ポータブルパッケージ作成（配布向け）
+JRE を同梱したポータブル版パッケージを作成できます：
+```powershell
+.\gradlew.bat createPortablePackage
+```
+
+出力先: `app/build/distribution/app/`
+
+このパッケージは以下を含みます：
+- `run.bat` - アプリケーション起動スクリプト
+- `lib/` - JAR ファイルと依存ライブラリ
+- `jre/` - Java 21 ポータブル実行環境（jlink 生成）
+- `README.txt` - 使用方法
+
+**使用方法：**
+- Windows: `run.bat` をダブルクリック、またはコマンドプロンプトで `run.bat` を実行
+- JRE 別途インストール不要
+
 ## 実行 - 対話モード（推奨）
 `installDist` でネイティブ起動スクリプトを使うと Unicode 入力が安定します:
 ```powershell
