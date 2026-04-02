@@ -4,6 +4,8 @@ import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.memory.ChatMemory;
 import dev.langchain4j.service.AiServices;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.tools.Calculator;
 import org.example.tools.FileReaderTool;
 import org.example.tools.FileWriterTool;
@@ -59,6 +61,8 @@ public class ChatCLI {
     private static final String UNKNOWN_ARGUMENT_MESSAGE = "不明な引数です。引数なしで実行すると対話モードが起動します。";
     private static final String AI_THINKING_LABEL = "AI 考え中...";
     private static final String COMMAND_RUNNING_LABEL = "コマンド実行中...";
+    private static final ObjectMapper mapper = new ObjectMapper();
+
     private static final String STEP_CONTINUE_PREFIX = "STEP_CONTINUE:";
     private static final String STEP_FINAL_PREFIX = "STEP_FINAL:";
     private static final int DEFAULT_AGENT_MAX_STEPS = 5;
@@ -69,6 +73,36 @@ public class ChatCLI {
     private static final Pattern FENCED_CODE_BLOCK = Pattern.compile("(?s)```([a-zA-Z0-9_+\\-]*)\\R(.*?)```");
     private static final Pattern CODE_TOKEN_PATTERN = Pattern
             .compile("\\\"(?:\\\\.|[^\\\"])*\\\"|'(?:\\\\.|[^'])*'|\\b\\d+(?:\\.\\d+)?\\b|\\b[A-Za-z_][A-Za-z0-9_]*\\b|#.*$|//.*$|--.*$", Pattern.MULTILINE);
+
+    /**
+     * エージェント1ステップの判定種別です。
+     */
+    private enum AgentStepDecision {
+        CONTINUE,
+        FINAL,
+        FALLBACK
+    }
+
+    /**
+     * 1ステップ応答の解析結果を表すレコードです。
+     *
+     * @param decision 継続/完了/フォールバックの判定
+     * @param body 接頭辞を除いた本文
+     * @param rawResponse モデルの生レスポンス
+     */
+    private record AgentStepResult(AgentStepDecision decision, String body, String rawResponse) {
+    }
+
+    /**
+     * エージェントの継続実行待ち状態を保持するレコードです。
+     *
+     * @param taskUserMessage 元のタスク
+     * @param scratch これまでのステップ記録
+     * @param nextStep 次に実行するステップ番号
+     * @param maxSteps 最大ステップ数
+     */
+    private record PendingAgentExecution(String taskUserMessage, String scratch, int nextStep, int maxSteps) {
+    }
 
     /**
      * 直近の検索結果一覧を保持します。
@@ -220,24 +254,33 @@ public class ChatCLI {
     }
 
     private static final String DEFAULT_SYSTEM_PROMPT = """
-            あなたはプロフェッショナルなアシスタントです。常に日本語で、丁寧かつ簡潔に答えてください。技術的な説明は箇条書きやコード例を使って分かりやすく示し、必要なら出力の最後に要約を短く付けてください。決して英語で返答しないでください。
+            あなたはプロフェッショナルな自律型AIエージェントです。常に日本語で、丁寧かつ簡潔に答えてください。
+            
+            ## 自律的行動指針:
+            1. **一気通貫の調査**: ユーザーの目的（例：型変更の影響調査）を達成するために必要なステップを、可能な限り自律的に、連続して実行してください。
+            2. **依存関係の自動追跡**: COPY句やimport文など、ファイル間で連鎖する依存関係を見つけた場合、ユーザーの個別の指示を待たずに、その参照先ファイルも自動的に調査対象に含めてください。
+            3. **代替案の自走**: 最初のツール実行で期待した結果が得られない場合（例：検索結果0件）、別の検索キーワードや別のツール（大文字小文字のバリエーション、変数名の一部など）を自律的に試行してください。
+            4. **一歩先の推論**: 単に「ファイルがあった」で終わらせず、「そのファイルの中身を確認し、次のアクション（例：利用箇所の特定）を提案、または実行する」ところまでを1セットと考えてください。
+            5. **ImpactAnalysisToolのフル活用**: テーブル変更の影響調査では ImpactAnalysisTool を最優先で使い、得られたファイルリストに対して自動的に詳細な Select-String やファイル読み込みを行い、影響の全容（波及経路）を明らかにしてください。
 
-            ツール選択ルール:
+            ツール選択・実行ルール:
             - 検索や調査が必要な場合は LocalCommandTool を使ってください。
-            - ファイル内容の検索、正規表現検索、拡張子限定検索、ディレクトリ配下の列挙は LocalCommandTool で実現してください。
-            - Windows 環境ではまず rg を優先し、必要に応じて Select-String や findstr を使ってください。
-            - Java ファイルだけを対象にしたい場合は *.java の絞り込みをコマンドに含めてください。
-            - Git 情報の確認が必要な場合は LocalCommandTool で読み取り専用コマンド（git status/log/show/diff/branch など）を使ってください。
-            - SELECT .* FROM のようなパターンは正規表現として扱ってください。
-            - 目的を満たすための検索コマンドを自分で考えてから LocalCommandTool を呼び出してください。
-            - ツール実行後は結果を要約し、必要なら次の検索条件を提案してください。
-            - LocalCommandTool は最初の呼び出しでは実行されず、確認メッセージを返します。
-            - 確認メッセージが出たら、ユーザに「はい/いいえ」で意思確認し、はいの場合にのみ実行してください。
-            - ファイルへの書き込みが必要な場合は FileWriterTool を使ってください。
-            - FileWriterTool はテキスト系ファイル（txt, md, java, json など）のみ対応しています。
-            - ファイルを書き込む前に、書き込み内容をユーザに確認してから実行してください。
-            - テーブル変更時の影響調査では ImpactAnalysisTool を最優先で使って、Java/COBOL を含む推移的な影響ファイルを抽出してください。
-            - 影響調査タスクで LocalCommandTool を使うのは、ImpactAnalysisTool で不足する追加調査が必要な場合だけにしてください。
+            - 前提となる環境はWindows 11で、PowerShellが利用可能です。
+            - ツール実行後は結果を要約し、次のステップを具体的に決定してください。
+            - **重要: 応答は常に JSON 形式のみで返してください。余計な説明文は一切不要です。**
+            - **重要: ツールを呼び出す場合は、必ず `act` に具体的な思考を記述した上で、実際にメソッドを呼び出してください。**
+              形式:
+              {
+                "status": "CONTINUE" | "FINAL",
+                "plan": "最終目標達成までの全体計画",
+                "act": "今まさに実行する具体的アクション（ツール呼び出し思考）",
+                "observe": "これまでのツール実行結果の分析と事実",
+                "decide": "前回の結果を受けて、なぜこの次のアクションが必要かという論理的根拠",
+                "answer": "ユーザーへの最終回答（statusがFINALの場合のみ）"
+              }
+            - LocalCommandTool/FileWriterTool は実行前にユーザーの承認が必要なため、承認が得られるまでは `status: CONTINUE` で進めてください。
+            - ユーザーが「はい」と言った後は、そのアクションの結果を `observe` に取り込み、迷わず次のステップ（別のファイルの調査など）へ進んでください。
+            - テーブル変更時の影響調査では ImpactAnalysisTool を最優先で使ってください。
             """;
 
     private static final String SYSTEM_PROMPT = System.getenv().getOrDefault("CHAT_SYSTEM_PROMPT",
@@ -275,6 +318,11 @@ public class ChatCLI {
      * 直近の検索結果一覧を保持します。
      */
     private static List<Path> lastSearchResults = null;
+
+    /**
+     * エージェントの次ステップ承認待ち状態を保持します。
+     */
+    private static PendingAgentExecution pendingAgentExecution = null;
 
     /**
      * ANSI カラー表示を有効にするかどうかを判定します。
@@ -499,50 +547,207 @@ public class ChatCLI {
     }
 
     /**
+     * 現在ステップ用の計画プロンプトを組み立てます。
+     * 計画・実行・観測を分けた出力を要求し、最後に継続/完了を明示させます。
+     *
+     * @param taskUserMessage ユーザ要求
+     * @param maxSteps 最大ステップ数
+     * @param step 現在ステップ
+     * @param scratch これまでの記録
+     * @return モデルに渡すプロンプト
+     */
+    private static String buildStepPrompt(String taskUserMessage, int maxSteps, int step, String scratch) {
+        return SYSTEM_PROMPT + "\n\n"
+                + "## タスク処理ルール\n"
+                + "以下のタスクを最大 " + maxSteps + " ステップで処理します。現在はステップ " + step + " です。\n"
+                + "必ず指定された JSON 形式のみで回答してください。\n\n"
+                + "## 出力 JSON 形式\n"
+                + "{\n"
+                + "  \"status\": \"CONTINUE\" | \"FINAL\",\n"
+                + "  \"plan\": \"今回行う具体的な作業内容\",\n"
+                + "  \"act\": \"実行内容（操作が必要な場合はここで必ずツールを呼び出すこと）\",\n"
+                + "  \"observe\": \"前回の実行結果からの観察、または現状の分析\",\n"
+                + "  \"decide\": \"なぜ継続/完了するかの判断根拠\",\n"
+                + "  \"answer\": \"ユーザーへの最終回答（statusがFINALの場合のみ）\"\n"
+                + "}\n\n"
+                + "## コンテキスト\n"
+                + "タスク: " + taskUserMessage + "\n"
+                + "これまでの記録:\n"
+                + (scratch.isBlank() ? "(なし)" : scratch) + "\n";
+    }
+
+    /**
+     * モデル応答を JSON に基づいて解析します。
+     *
+     * @param response モデル応答
+     * @return 解析結果
+     */
+    private static AgentStepResult parseStepResult(String response) {
+        String safeResponse = response == null ? "" : response.strip();
+        if (safeResponse.isEmpty()) {
+            return new AgentStepResult(AgentStepDecision.FALLBACK, "", "");
+        }
+
+        try {
+            // JSON部分を抽出（```json ... ``` も考慮）
+            String jsonContent = safeResponse;
+            if (safeResponse.contains("{")) {
+                int start = safeResponse.indexOf("{");
+                int end = safeResponse.lastIndexOf("}");
+                if (end > start) {
+                    jsonContent = safeResponse.substring(start, end + 1);
+                }
+            }
+
+            JsonNode node = mapper.readTree(jsonContent);
+            String status = node.path("status").asText("FALLBACK").toUpperCase(Locale.ROOT);
+            String plan = node.path("plan").asText("");
+            String act = node.path("act").asText("");
+            String observe = node.path("observe").asText("");
+            String decide = node.path("decide").asText("");
+            String answer = node.path("answer").asText("");
+
+            StringBuilder bodyBuilder = new StringBuilder();
+            bodyBuilder.append("PLAN: ").append(plan).append("\n");
+            bodyBuilder.append("ACT: ").append(act).append("\n");
+            bodyBuilder.append("OBSERVE: ").append(observe).append("\n");
+            bodyBuilder.append("DECIDE: ").append(decide).append("\n");
+            if (!answer.isEmpty()) {
+                bodyBuilder.append("ANSWER: ").append(answer).append("\n");
+            }
+
+            String body = bodyBuilder.toString();
+
+            if ("FINAL".equals(status)) {
+                return new AgentStepResult(AgentStepDecision.FINAL, answer.isEmpty() ? body : answer, safeResponse);
+            } else if ("CONTINUE".equals(status)) {
+                return new AgentStepResult(AgentStepDecision.CONTINUE, body, safeResponse);
+            }
+        } catch (Exception e) {
+            // 解析失敗時はフォールバック（旧来の解析を試みる）
+            if (safeResponse.regionMatches(true, 0, STEP_FINAL_PREFIX, 0, STEP_FINAL_PREFIX.length())) {
+                return new AgentStepResult(AgentStepDecision.FINAL, safeResponse.substring(STEP_FINAL_PREFIX.length()).strip(), safeResponse);
+            }
+            if (safeResponse.regionMatches(true, 0, STEP_CONTINUE_PREFIX, 0, STEP_CONTINUE_PREFIX.length())) {
+                return new AgentStepResult(AgentStepDecision.CONTINUE, safeResponse.substring(STEP_CONTINUE_PREFIX.length()).strip(), safeResponse);
+            }
+        }
+
+        return new AgentStepResult(AgentStepDecision.FALLBACK, safeResponse, safeResponse);
+    }
+
+    /**
+     * 最終化フェーズのプロンプトを組み立てます。
+     *
+     * @param scratch これまでのステップ記録
+     * @return 最終化プロンプト
+     */
+    private static String buildFinalizePrompt(String scratch) {
+        return SYSTEM_PROMPT + "\n\n"
+                + "最大ステップに到達しました。これまでの記録を踏まえて最終回答だけを返してください。\n"
+                + scratch;
+    }
+
+    /**
+     * 次ステップ実行確認のメッセージを組み立てます。
+     *
+     * @param currentStep 直前に完了したステップ番号
+     * @param maxSteps 最大ステップ数
+     * @param body 直前ステップの本文
+     * @return 確認メッセージ
+     */
+    private static String buildStepApprovalMessage(int currentStep, int maxSteps, String body) {
+        return "ステップ " + currentStep + " を完了しました。\n"
+                + body + "\n\n"
+                + "次のステップ（" + (currentStep + 1) + " / " + maxSteps + "）を実行しますか？（はい/いいえ）";
+    }
+
+    /**
+     * 承認待ちのエージェント継続実行があるかを判定します。
+     *
+     * @return 承認待ちがある場合 true
+     */
+    private static boolean hasPendingAgentExecution() {
+        return pendingAgentExecution != null;
+    }
+
+    /**
+     * 承認待ちのエージェント継続実行を破棄します。
+     *
+     * @return キャンセルメッセージ
+     */
+    private static String cancelPendingAgentExecution() {
+        pendingAgentExecution = null;
+        return "エージェントの次ステップ実行をキャンセルしました。";
+    }
+
+    /**
+     * 承認済みの継続実行を再開します。
+     *
+     * @param assistant アシスタント
+     * @return 再開後の応答
+     */
+    private static String continuePendingAgentExecution(Assistant assistant) {
+        if (!hasPendingAgentExecution()) {
+            return "ERROR: no pending agent execution";
+        }
+        PendingAgentExecution state = pendingAgentExecution;
+        pendingAgentExecution = null;
+        return runAgentStepLoopInternal(assistant, state.taskUserMessage(), state.scratch(), state.nextStep(), state.maxSteps());
+    }
+
+    /**
      * 1ターン内で最大 N ステップのエージェント思考ループを実行します。
-     * STEP_CONTINUE / STEP_FINAL の接頭辞で継続判定を行います。
+     * 各ステップ完了時に次ステップの実行確認を挟みます。
      *
      * @param assistant アシスタント
      * @param taskUserMessage ユーザ要求（またはツール結果を含む指示）
-     * @return 最終応答
+     * @return 最終応答または次ステップ確認メッセージ
      */
     private static String runAgentStepLoop(Assistant assistant, String taskUserMessage) {
-        int maxSteps = resolveAgentMaxSteps();
-        StringBuilder scratch = new StringBuilder();
+        pendingAgentExecution = null;
+        return runAgentStepLoopInternal(assistant, taskUserMessage, "", 1, resolveAgentMaxSteps());
+    }
 
-        for (int step = 1; step <= maxSteps; step++) {
-            String prompt = SYSTEM_PROMPT + "\n\n"
-                    + "以下のタスクを最大 " + maxSteps + " ステップで処理してください。\n"
-                    + "- 途中継続が必要なら、必ず先頭を '" + STEP_CONTINUE_PREFIX + "' で返してください。\n"
-                    + "- 完了できるなら、必ず先頭を '" + STEP_FINAL_PREFIX + "' で返してください。\n"
-                    + "- 接頭辞の後に本文を書いてください。\n\n"
-                    + "タスク:\n" + taskUserMessage + "\n\n"
-                    + "これまでのステップ記録:\n"
-                    + (scratch.isEmpty() ? "(なし)" : scratch.toString()) + "\n"
-                    + "現在ステップ: " + step + " / " + maxSteps;
+    /**
+     * 指定状態からエージェント思考ループを実行します。
+     *
+     * @param assistant アシスタント
+     * @param taskUserMessage ユーザ要求
+     * @param initialScratch 既存のステップ記録
+     * @param startStep 開始ステップ
+     * @param maxSteps 最大ステップ数
+     * @return 最終応答または次ステップ確認メッセージ
+     */
+    private static String runAgentStepLoopInternal(Assistant assistant, String taskUserMessage,
+            String initialScratch, int startStep, int maxSteps) {
+        StringBuilder scratch = new StringBuilder(initialScratch == null ? "" : initialScratch);
 
-            String response = assistant.chat(prompt);
-            String trimmed = response == null ? "" : response.strip();
+        for (int step = startStep; step <= maxSteps; step++) {
+            String prompt = buildStepPrompt(taskUserMessage, maxSteps, step, scratch.toString());
+            AgentStepResult stepResult = parseStepResult(assistant.chat(prompt));
 
-            if (trimmed.regionMatches(true, 0, STEP_FINAL_PREFIX, 0, STEP_FINAL_PREFIX.length())) {
-                String body = trimmed.substring(STEP_FINAL_PREFIX.length()).strip();
-                return body.isEmpty() ? "(no content)" : body;
+            if (stepResult.decision() == AgentStepDecision.FINAL) {
+                pendingAgentExecution = null;
+                return stepResult.body().isEmpty() ? "(no content)" : stepResult.body();
             }
 
-            if (trimmed.regionMatches(true, 0, STEP_CONTINUE_PREFIX, 0, STEP_CONTINUE_PREFIX.length())) {
-                String body = trimmed.substring(STEP_CONTINUE_PREFIX.length()).strip();
-                scratch.append("Step ").append(step).append(": ").append(body).append("\n");
-                continue;
+            if (stepResult.decision() == AgentStepDecision.CONTINUE) {
+                scratch.append("Step ").append(step).append(": ").append(stepResult.body()).append("\n");
+                if (step < maxSteps) {
+                    pendingAgentExecution = new PendingAgentExecution(taskUserMessage, scratch.toString(), step + 1, maxSteps);
+                    return buildStepApprovalMessage(step, maxSteps, stepResult.body());
+                }
+                break;
             }
 
             // モデルが接頭辞ルールを守らない場合は、そのまま最終応答として扱う
-            return response;
+            pendingAgentExecution = null;
+            return stepResult.rawResponse();
         }
 
-        String finalizePrompt = SYSTEM_PROMPT + "\n\n"
-                + "最大ステップに到達しました。これまでの記録を踏まえて最終回答だけを返してください。\n"
-                + scratch;
-        return assistant.chat(finalizePrompt);
+        pendingAgentExecution = null;
+        return assistant.chat(buildFinalizePrompt(scratch.toString()));
     }
 
     /**
@@ -669,6 +874,28 @@ public class ChatCLI {
                         writer.println(aiLabel(colorEnabled));
                         writer.println("承認待ちのコマンドがあります。実行する場合は『はい』、中止する場合は『いいえ』と入力してください。対象: "
                                 + localCommandTool.pendingCommandPreview());
+                        writer.flush();
+                        continue;
+                    }
+
+                    if (hasPendingAgentExecution()) {
+                        if (isApproveInput(normalizedMessage)) {
+                            String aiResponse = withSpinner(writer, AI_THINKING_LABEL,
+                                    () -> continuePendingAgentExecution(assistant));
+                            writer.println(aiLabel(colorEnabled));
+                            writer.println(renderWithSyntaxHighlight(aiResponse, colorEnabled));
+                            writer.flush();
+                            continue;
+                        }
+                        if (isRejectInput(normalizedMessage)) {
+                            String canceled = cancelPendingAgentExecution();
+                            writer.println(aiLabel(colorEnabled));
+                            writer.println(canceled);
+                            writer.flush();
+                            continue;
+                        }
+                        writer.println(aiLabel(colorEnabled));
+                        writer.println("承認待ちのエージェント次ステップがあります。続行する場合は『はい』、中止する場合は『いいえ』と入力してください。");
                         writer.flush();
                         continue;
                     }

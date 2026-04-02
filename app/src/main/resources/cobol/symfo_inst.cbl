@@ -25,27 +25,16 @@
         WORKING-STORAGE SECTION.
        *ファイルのステータス変数
          01  FST                    PIC X(02).
-       *プレコンパイラに渡す設定開始宣言
-        EXEC SQL BEGIN DECLARE SECTION END-EXEC.
-       *SQL実行時の状態定数格納用
-        01 SQLSTATE     PIC X(5).
-        01 SQLMSG       PIC X(255).
-       *郵便番号
-        01 ZIPCODE      PIC X(7).
-       *住所
-        01 ADDRESS_NAME PIC N(50).
-        EXEC SQL END DECLARE SECTION END-EXEC.
-       *プレコンパイラに渡す変数はここまで。
+       *COPY句を使用してホスト変数を読み込む
+            COPY "HOST_VARS.cpy".
        *
         01  COUNT1       PIC 9(1)  BINARY.
         01  WORK         PIC X(12).
        *
         PROCEDURE DIVISION.
         MAIN SECTION.
-       *使用するテーブルとスキーマの関連付けを行う
-            EXEC SQL DECLARE
-                POST_CD TABLE ON SC_SAMPLE
-            END-EXEC.
+       *COPY句を使用してテーブル定義を読み込む
+            COPY "POST_CD.cpy".
        
        *    SAMPLEデータベースへ接続
             EXEC SQL CONNECT TO 'SAMPLE' END-EXEC.

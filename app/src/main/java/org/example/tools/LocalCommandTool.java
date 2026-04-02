@@ -1,6 +1,8 @@
 package org.example.tools;
 
 import dev.langchain4j.agent.tool.Tool;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -9,22 +11,22 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
-    /**
-     * LLM が生成した読み取り系コマンドをローカルで実行するツール。
-     * 安全性のため、変更系操作は許可しません。
-     */
+/**
+ * LLM が生成した読み取り系コマンドをローカルで実行するツール。
+ * 安全性のため、変更系操作は許可しません。
+ */
 public class LocalCommandTool {
 
     private static final int MAX_COMMAND_LENGTH = 500;
     private static final int MAX_OUTPUT_CHARS = 12000;
     private static final long TIMEOUT_SECONDS = 20;
+    private static final ObjectMapper mapper = new ObjectMapper();
 
     private static final Pattern FORBIDDEN_PATTERN = Pattern.compile(
             "(?i)(\\brm\\b|\\bdel\\b|remove-item|format-|shutdown|restart|stop-process|kill|taskkill|" +
-                    "git\\s+reset|git\\s+checkout\\s+--|out-file|set-content|add-content|>\\s*\\S|>>\\s*\\S)"
-    );
+                    "git\\s+reset|git\\s+checkout\\s+--|out-file|set-content|add-content|>\\s*\\S|>>\\s*\\S)");
 
-        private String pendingCommand;
+    private String pendingCommand;
 
     /**
      * 検索目的のローカルコマンドを実行します。
@@ -118,7 +120,7 @@ public class LocalCommandTool {
     /**
      * 実コマンドを実行して結果を返します。
      *
-     * @param command 実行コマンド
+     * @param command           実行コマンド
      * @param singleLineCommand 表示用1行コマンド
      * @return 実行結果
      */
@@ -156,9 +158,20 @@ public class LocalCommandTool {
                 body = "(no output)";
             }
 
-            return "command=" + singleLineCommand + "\n" + "exitCode=" + exitCode + "\n" + body.trim();
+            ObjectNode result = mapper.createObjectNode();
+            result.put("command", singleLineCommand);
+            result.put("exitCode", exitCode);
+            result.put("status", exitCode == 0 ? "SUCCESS" : "FAILURE");
+            result.put("stdout_stderr", body.trim());
+            result.put("truncated", output.length() >= MAX_OUTPUT_CHARS);
+
+            return result.toString();
         } catch (Exception e) {
-            return "ERROR: failed to execute command: " + singleLineCommand + " | " + e.getMessage();
+            ObjectNode errorResult = mapper.createObjectNode();
+            errorResult.put("command", singleLineCommand);
+            errorResult.put("status", "ERROR");
+            errorResult.put("message", e.getMessage());
+            return errorResult.toString();
         }
     }
 
@@ -175,7 +188,10 @@ public class LocalCommandTool {
             return isAllowedReadOnlyGitCommand(lower);
         }
 
-        return "rg".equals(first)
+        // Allow common read-only search/listing commands and also allow JVM invocation
+        // (javac/java) which are non-destructive but may execute user code.
+        // We accept both plain names and absolute paths like C:\\path\\to\\java.exe
+        if ("rg".equals(first)
                 || "grep".equals(first)
                 || "findstr".equals(first)
                 || "select-string".equals(first)
@@ -183,7 +199,17 @@ public class LocalCommandTool {
                 || "gci".equals(first)
                 || "find".equals(first)
                 || "dir".equals(first)
-                || "ls".equals(first);
+                || "ls".equals(first)) {
+            return true;
+        }
+
+        // Allow javac/java invocations (including full paths ending with java or
+        // java.exe/javac)
+        if (first.endsWith("java") || first.endsWith("java.exe") || first.endsWith("javac")) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
