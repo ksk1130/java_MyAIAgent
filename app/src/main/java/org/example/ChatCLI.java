@@ -27,6 +27,7 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher;
 import java.nio.file.Paths;
+import java.nio.file.Files;
 import java.util.List;
 import java.util.ArrayList;
 import java.nio.file.Path;
@@ -50,6 +51,7 @@ public class ChatCLI {
     private static final String ANSI_CYAN = "\u001B[36m";
     private static final String ANSI_BLUE_BOLD = "\u001B[1;34m";
     private static final String EXIT_COMMAND = "exit";
+    private static final String CLEAR_HISTORY_COMMAND = "/clear";
     private static final String SELECTION_ALL = "all";
     private static final String SELECTION_NONE = "none";
     private static final String SELECTION_CANCEL = "cancel";
@@ -57,6 +59,9 @@ public class ChatCLI {
     private static final String UNKNOWN_ARGUMENT_MESSAGE = "不明な引数です。引数なしで実行すると対話モードが起動します。";
     private static final String AI_THINKING_LABEL = "AI 考え中...";
     private static final String COMMAND_RUNNING_LABEL = "コマンド実行中...";
+    private static final String STEP_CONTINUE_PREFIX = "STEP_CONTINUE:";
+    private static final String STEP_FINAL_PREFIX = "STEP_FINAL:";
+    private static final int DEFAULT_AGENT_MAX_STEPS = 5;
     private static final Set<String> APPROVE_INPUTS = Set.of("はい", "yes", "y");
     private static final Set<String> REJECT_INPUTS = Set.of("いいえ", "no", "n", "キャンセル");
     private static final Set<String> SELECTION_VERBS = Set.of("read", "open", "show", "select");
@@ -231,7 +236,8 @@ public class ChatCLI {
             - ファイルへの書き込みが必要な場合は FileWriterTool を使ってください。
             - FileWriterTool はテキスト系ファイル（txt, md, java, json など）のみ対応しています。
             - ファイルを書き込む前に、書き込み内容をユーザに確認してから実行してください。
-            - テーブル名変更時の影響調査では ImpactAnalysisTool を使って、Java/COBOL を含む推移的な影響ファイルを抽出してください。
+            - テーブル変更時の影響調査では ImpactAnalysisTool を最優先で使って、Java/COBOL を含む推移的な影響ファイルを抽出してください。
+            - 影響調査タスクで LocalCommandTool を使うのは、ImpactAnalysisTool で不足する追加調査が必要な場合だけにしてください。
             """;
 
     private static final String SYSTEM_PROMPT = System.getenv().getOrDefault("CHAT_SYSTEM_PROMPT",
@@ -478,6 +484,68 @@ public class ChatCLI {
     }
 
     /**
+     * 最大ステップ数を環境変数から取得します。
+     *
+     * @return 1〜10 に正規化された最大ステップ数
+     */
+    private static int resolveAgentMaxSteps() {
+        String raw = System.getenv().getOrDefault("CHAT_AGENT_MAX_STEPS", String.valueOf(DEFAULT_AGENT_MAX_STEPS));
+        try {
+            int parsed = Integer.parseInt(raw.strip());
+            return Math.max(1, Math.min(parsed, 10));
+        } catch (NumberFormatException e) {
+            return DEFAULT_AGENT_MAX_STEPS;
+        }
+    }
+
+    /**
+     * 1ターン内で最大 N ステップのエージェント思考ループを実行します。
+     * STEP_CONTINUE / STEP_FINAL の接頭辞で継続判定を行います。
+     *
+     * @param assistant アシスタント
+     * @param taskUserMessage ユーザ要求（またはツール結果を含む指示）
+     * @return 最終応答
+     */
+    private static String runAgentStepLoop(Assistant assistant, String taskUserMessage) {
+        int maxSteps = resolveAgentMaxSteps();
+        StringBuilder scratch = new StringBuilder();
+
+        for (int step = 1; step <= maxSteps; step++) {
+            String prompt = SYSTEM_PROMPT + "\n\n"
+                    + "以下のタスクを最大 " + maxSteps + " ステップで処理してください。\n"
+                    + "- 途中継続が必要なら、必ず先頭を '" + STEP_CONTINUE_PREFIX + "' で返してください。\n"
+                    + "- 完了できるなら、必ず先頭を '" + STEP_FINAL_PREFIX + "' で返してください。\n"
+                    + "- 接頭辞の後に本文を書いてください。\n\n"
+                    + "タスク:\n" + taskUserMessage + "\n\n"
+                    + "これまでのステップ記録:\n"
+                    + (scratch.isEmpty() ? "(なし)" : scratch.toString()) + "\n"
+                    + "現在ステップ: " + step + " / " + maxSteps;
+
+            String response = assistant.chat(prompt);
+            String trimmed = response == null ? "" : response.strip();
+
+            if (trimmed.regionMatches(true, 0, STEP_FINAL_PREFIX, 0, STEP_FINAL_PREFIX.length())) {
+                String body = trimmed.substring(STEP_FINAL_PREFIX.length()).strip();
+                return body.isEmpty() ? "(no content)" : body;
+            }
+
+            if (trimmed.regionMatches(true, 0, STEP_CONTINUE_PREFIX, 0, STEP_CONTINUE_PREFIX.length())) {
+                String body = trimmed.substring(STEP_CONTINUE_PREFIX.length()).strip();
+                scratch.append("Step ").append(step).append(": ").append(body).append("\n");
+                continue;
+            }
+
+            // モデルが接頭辞ルールを守らない場合は、そのまま最終応答として扱う
+            return response;
+        }
+
+        String finalizePrompt = SYSTEM_PROMPT + "\n\n"
+                + "最大ステップに到達しました。これまでの記録を踏まえて最終回答だけを返してください。\n"
+                + scratch;
+        return assistant.chat(finalizePrompt);
+    }
+
+    /**
      * 対話モードでチャットを行います。
      * 標準入力からユーザ入力を受け取り、Assistant を通じて応答を取得します。
      * チャット履歴は MessageWindowChatMemory によって管理されます。
@@ -499,7 +567,7 @@ public class ChatCLI {
         Assistant assistant = AiServices.builder(Assistant.class)
                 .chatModel(model)
                 .chatMemory(chatMemory)
-                .tools(new Calculator(), new FileReaderTool(), new FileWriterTool(), new ImpactAnalysisTool(), localCommandTool)
+            .tools(new Calculator(), new FileReaderTool(), new FileWriterTool(), new ImpactAnalysisTool(), localCommandTool)
                 .build();
 
         // JLine3 Terminal: Windows ネイティブコンソール API を使用し Unicode 入力を正しく処理
@@ -543,13 +611,30 @@ public class ChatCLI {
                     break;
                 }
 
+                // 履歴クリアコマンド
+                if (CLEAR_HISTORY_COMMAND.equalsIgnoreCase(normalizedMessage)) {
+                    try {
+                        chatMemory.clear();
+                        Path historyFile = Paths.get(System.getProperty("user.home"), ".ai_history");
+                        Files.deleteIfExists(historyFile);
+                        writer.println(aiLabel(colorEnabled));
+                        writer.println("✓ 会話履歴と入力履歴をクリアしました");
+                        writer.flush();
+                        continue;
+                    } catch (Exception e) {
+                        writer.println("[ERROR] 履歴クリア中にエラーが発生しました: " + e.getMessage());
+                        writer.flush();
+                        continue;
+                    }
+                }
+
                 try {
                     if (localCommandTool.hasPendingCommand()) {
                         if (isApproveInput(normalizedMessage)) {
                                 String commandResult = withSpinner(writer, COMMAND_RUNNING_LABEL,
                                     localCommandTool::executePendingCommand);
                                 String aiResponse = withSpinner(writer, AI_THINKING_LABEL,
-                                    () -> assistant.chat(SYSTEM_PROMPT + "\n\n" +
+                                    () -> runAgentStepLoop(assistant,
                                             "以下は承認後に実行したローカルコマンド結果です。要約してください。\n" + commandResult));
                             writer.println(aiLabel(colorEnabled));
                             writer.println(renderWithSyntaxHighlight(aiResponse, colorEnabled));
@@ -575,7 +660,7 @@ public class ChatCLI {
                         String selectionResult = handleSelectionInput(normalizedMessage);
                         if (selectionResult != null) {
                                 String aiResponse = withSpinner(writer, AI_THINKING_LABEL,
-                                    () -> assistant.chat(SYSTEM_PROMPT + "\n\n" + selectionResult));
+                                    () -> runAgentStepLoop(assistant, selectionResult));
                             writer.println(aiLabel(colorEnabled));
                             writer.println(renderWithSyntaxHighlight(aiResponse, colorEnabled));
                             writer.flush();
@@ -585,7 +670,7 @@ public class ChatCLI {
 
                     // 通常は LLM(Function Calling) を優先してツール選択させる
                         String aiResponse = withSpinner(writer, AI_THINKING_LABEL,
-                () -> assistant.chat(SYSTEM_PROMPT + "\n\n" + normalizedMessage));
+                    () -> runAgentStepLoop(assistant, normalizedMessage));
                     writer.println(aiLabel(colorEnabled));
                     writer.println(renderWithSyntaxHighlight(aiResponse, colorEnabled));
                     writer.flush();
@@ -614,7 +699,7 @@ public class ChatCLI {
                 .chatMemory(chatMemory)
                 .tools(new Calculator(), new FileReaderTool(), new FileWriterTool(), new ImpactAnalysisTool(), localCommandTool)
                 .build();
-        String aiResponse = assistant.chat(SYSTEM_PROMPT + "\n\n" + message);
+        String aiResponse = runAgentStepLoop(assistant, message);
         System.out.println(renderWithSyntaxHighlight(aiResponse, isColorEnabled()));
     }
 
