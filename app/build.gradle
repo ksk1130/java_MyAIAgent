@@ -161,17 +161,34 @@ tasks.register('createPortablePackage') {
             fileset(dir: jreOutputDir)
         }
 
-        // Create launcher script
+        // Create launcher script - prefer root-level run.bat if present, else fallback to scripts/run.bat
         def runBat = new File(appPackageDir, 'run.bat')
-        def batContent = new File(projectDir, 'scripts/run.bat').text
-        runBat.text = batContent
-        logger.lifecycle("✓ Launcher script created: ${runBat.absolutePath}")
+        def batSource1 = new File(projectDir, 'run.bat')
+        def batSource2 = new File(projectDir, 'scripts/run.bat')
+        if (batSource1.exists()) {
+            def batContent = batSource1.text
+            // For distribution: replace gradlew.bat calls with direct java.exe invocation
+            batContent = batContent.replace('call "%~dp0gradlew.bat" :app:run',
+                    '".\\jre\\bin\\java.exe" -Dfile.encoding=UTF-8 -cp "lib\\*" org.example.ChatCLI')
+            batContent = batContent.replace('& \'%~dp0gradlew.bat\' \':app:run\'',
+                    '& \'.\\jre\\bin\\java.exe\' -Dfile.encoding=UTF-8 -cp \'lib\\*\' org.example.ChatCLI')
+            runBat.text = batContent
+        } else if (batSource2.exists()) {
+            runBat.text = batSource2.text
+        } else {
+            logger.lifecycle('WARNING: No run.bat found in project root or scripts/. Skipping launcher script creation.')
+        }
+        if (runBat.exists()) logger.lifecycle("✓ Launcher script created: ${runBat.absolutePath}")
 
-        // Create README
+        // Create README - prefer scripts/README.txt if present
         def readmeTxt = new File(appPackageDir, 'README.txt')
-        def readmeContent = new File(projectDir, 'scripts/README.txt').text
-        readmeTxt.text = readmeContent
-        logger.lifecycle("✓ README created: ${readmeTxt.absolutePath}")
+        def readmeSource = new File(projectDir, 'scripts/README.txt')
+        if (readmeSource.exists()) {
+            readmeTxt.text = readmeSource.text
+            logger.lifecycle("✓ README created: ${readmeTxt.absolutePath}")
+        } else {
+            logger.lifecycle('INFO: No scripts/README.txt found; skipping README creation.')
+        }
 
         logger.lifecycle("""
 ========================================

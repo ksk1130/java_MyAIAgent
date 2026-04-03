@@ -930,11 +930,11 @@ public class ChatCLI {
     }
 
     /**
-     * 単発メッセージをモデルに送信して応答を表示するユーティリティ。
-     * 非対話環境（CI 等）での利用を想定しています。
+     * Single-shot message sending utility.
+     * For non-interactive environments (CI, etc).
      *
-     * @param message 送信するユーザメッセージ
-     * @throws Exception 送信時の例外を伝搬する可能性があります
+     * @param message User message to send
+     * @throws Exception Exceptions during sending may be propagated
      */
     public static void runChatOnce(String message) throws Exception {
         OpenAiChatModel model = buildModel();
@@ -951,6 +951,35 @@ public class ChatCLI {
     }
 
     /**
+     * One-shot autonomous execution mode. Reads instructions from prompt file and exits after output.
+     * Completes processing autonomously without interaction.
+     *
+     * @param userMessage User instruction (from prompt file)
+     * @throws Exception Runtime or network exceptions may be thrown
+     */
+    public static void runOneShot(String userMessage) throws Exception {
+        OpenAiChatModel model = buildModel();
+        int window = Integer.parseInt(System.getenv().getOrDefault("CHAT_MEMORY_WINDOW", "50"));
+        ChatMemory chatMemory = MessageWindowChatMemory.withMaxMessages(window);
+        LocalCommandTool localCommandTool = new LocalCommandTool(true);
+        Assistant assistant = AiServices.builder(Assistant.class)
+                .chatModel(model)
+                .chatMemory(chatMemory)
+                .tools(new Calculator(), new FileReaderTool(), new FileWriterTool(), new ImpactAnalysisTool(), localCommandTool, new GrepTool())
+                .build();
+
+        System.out.println("=== Processing Request ===");
+        System.out.println(userMessage);
+        System.out.println();
+        System.out.flush();
+
+        String result = runAgentStepLoop(assistant, userMessage);
+        System.out.println("\n=== Result ===");
+        System.out.println(renderWithSyntaxHighlight(result, isColorEnabled()));
+        System.out.flush();
+    }
+
+    /**
      * アプリケーションのエントリポイント。引数なしで対話モードを起動します。
      * "chat" 引数を付けた場合も対話モードとして動作します（後方互換性のため）。
      * 例:
@@ -962,15 +991,27 @@ public class ChatCLI {
      */
 
     public static void main(String[] args) throws Exception {
-        // 引数なし、または "chat" 引数で対話モードを起動
-        // JLine3 の Terminal がエンコーディングを自動処理するため、手動設定は不要
+        // With no arguments or "chat" argument -> interactive mode
+        // With prompt file path argument -> one-shot mode (reads file and executes autonomously)
         switch (args.length) {
             case 0 -> runChat();
             case 1 -> {
-                if (CHAT_MODE_ARGUMENT.equalsIgnoreCase(args[0].strip())) {
+                String arg = args[0].strip();
+                if (CHAT_MODE_ARGUMENT.equalsIgnoreCase(arg)) {
                     runChat();
                 } else {
-                    System.err.println(UNKNOWN_ARGUMENT_MESSAGE);
+                    // Treat as prompt file path
+                    try {
+                        String promptContent = new String(Files.readAllBytes(Paths.get(arg)));
+                        // Enable auto-approve mode for autonomous execution
+                        String autoApprove = System.getenv().getOrDefault("CHAT_AUTO_APPROVE", "true");
+                        if (!Boolean.parseBoolean(autoApprove)) {
+                            System.setProperty("CHAT_AUTO_APPROVE", "true");
+                        }
+                        runOneShot(promptContent);
+                    } catch (Exception e) {
+                        System.err.println("Failed to read prompt file: " + e.getMessage());
+                    }
                 }
             }
             default -> System.err.println(UNKNOWN_ARGUMENT_MESSAGE);

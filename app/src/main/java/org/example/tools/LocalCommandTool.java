@@ -27,7 +27,23 @@ public class LocalCommandTool {
             "(?i)(\\brm\\b|\\bdel\\b|remove-item|format-|shutdown|restart|stop-process|kill|taskkill|" +
                     "git\\s+reset|git\\s+checkout\\s+--|out-file|set-content|add-content|>\\s*\\S|>>\\s*\\S)");
 
+    /** true のとき確認ダイアログをスキップしてコマンドを即時実行します。 */
+    private final boolean autoApprove;
     private String pendingCommand;
+
+    /**
+     * デフォルトコンストラクタ。環境変数 CHAT_AUTO_APPROVE=true で自律実行モードになります。
+     */
+    public LocalCommandTool() {
+        this("true".equalsIgnoreCase(System.getenv("CHAT_AUTO_APPROVE")));
+    }
+
+    /**
+     * @param autoApprove true のとき確認をスキップして即時実行します
+     */
+    public LocalCommandTool(boolean autoApprove) {
+        this.autoApprove = autoApprove;
+    }
 
     /**
      * 検索目的のローカルコマンドを実行します。
@@ -57,6 +73,11 @@ public class LocalCommandTool {
 
         if (!looksLikeAllowedReadOnlyCommand(trimmed)) {
             return "ERROR: only read-only commands are allowed (rg/grep/findstr/Select-String/Get-ChildItem/dir/ls/git-status/log/show/diff/branch)";
+        }
+
+        if (autoApprove) {
+            // 自律実行モード: 確認をスキップして即時実行します。
+            return executeCommand(trimmed, singleLineCommand);
         }
 
         pendingCommand = trimmed;
