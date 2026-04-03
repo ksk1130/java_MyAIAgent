@@ -142,7 +142,7 @@ public class ImpactAnalysisTool {
 
         Map<String, Set<String>> callersByCallee = buildCallersByCallee(unitBySymbol);
         Map<String, Integer> distanceBySymbol = bfsReverseDependencies(directUnits, callersByCallee);
-        Map<String, Integer> copybookDistanceMap = buildCopybookChain(distanceBySymbol, unitBySymbol);
+        Map<String, Integer> copybookDistanceMap = buildCopybookChain(distanceBySymbol, unitBySymbol, workspaceRoot);
 
         List<Map.Entry<String, Integer>> sortedFiles = new ArrayList<>(distanceBySymbol.entrySet());
         sortedFiles.sort(Comparator.comparingInt(Map.Entry<String, Integer>::getValue)
@@ -293,7 +293,7 @@ public class ImpactAnalysisTool {
                 .thenComparing(Map.Entry::getKey));
 
         // 影響プログラムから COPY 句を前向きに再帰追跡してコピーブックを収集します。
-        Map<String, Integer> copybookDistanceMap = buildCopybookChain(distanceBySymbol, unitBySymbol);
+        Map<String, Integer> copybookDistanceMap = buildCopybookChain(distanceBySymbol, unitBySymbol, workspaceRoot);
 
         StringBuilder sb = new StringBuilder();
         sb.append("table=").append(tableName).append('\n');
@@ -535,12 +535,22 @@ public class ImpactAnalysisTool {
      * @param unitBySymbol   シンボルとソース単位の対応
      * @return コピーブックシンボルと COPY 深さのマップ
      */
+    /**
+     * Build copybook dependency chain by recursively traversing COPY clauses.
+     * When a copybook is not found in unitBySymbol, search the entire workspace.
+     *
+     * @param impactedUnits Directly impacted programs
+     * @param unitBySymbol Symbol name to SourceUnit mapping
+     * @param workspaceRoot Root directory for file system search fallback
+     * @return Copybook distance map (name -> distance)
+     */
     private static Map<String, Integer> buildCopybookChain(Map<String, Integer> impactedUnits,
-                                                           Map<String, SourceUnit> unitBySymbol) {
+                                                           Map<String, SourceUnit> unitBySymbol,
+                                                           Path workspaceRoot) {
         Map<String, Integer> copybookDistance = new LinkedHashMap<>();
         ArrayDeque<String> queue = new ArrayDeque<>();
 
-        // 影響プログラムそれぞれの COPY 句を起点に追跡開始します。
+        // Start traversal from COPY clauses in each impacted program
         for (Map.Entry<String, Integer> entry : impactedUnits.entrySet()) {
             String symbol = entry.getKey();
             SourceUnit unit = unitBySymbol.get(symbol);
@@ -548,18 +558,26 @@ public class ImpactAnalysisTool {
                 continue;
             }
             for (String copyName : extractCopyNames(unit.content())) {
-                // 既に impactedUnits に含まれるシンボルは除外します。
+                // Exclude copybooks already in impactedUnits
                 if (!impactedUnits.containsKey(copyName) && !copybookDistance.containsKey(copyName)) {
                     SourceUnit copyUnit = unitBySymbol.get(copyName);
+                    if (copyUnit == null && workspaceRoot != null) {
+                        // Fallback: search filesystem if not in unitBySymbol
+                        copyUnit = findCopybookInWorkspace(copyName, workspaceRoot, unitBySymbol);
+                    }
                     if (copyUnit != null) {
                         copybookDistance.put(copyName, 1);
                         queue.add(copyName);
+                        // Add to unitBySymbol for future lookups
+                        if (!unitBySymbol.containsKey(copyName)) {
+                            unitBySymbol.put(copyName, copyUnit);
+                        }
                     }
                 }
             }
         }
 
-        // コピーブックが参照するコピーブックも再帰的に追跡します。
+        // Recursively traverse copybooks referenced by other copybooks
         while (!queue.isEmpty()) {
             String current = queue.removeFirst();
             int currentDepth = copybookDistance.getOrDefault(current, 1);
@@ -570,9 +588,17 @@ public class ImpactAnalysisTool {
             for (String copyName : extractCopyNames(unit.content())) {
                 if (!impactedUnits.containsKey(copyName) && !copybookDistance.containsKey(copyName)) {
                     SourceUnit copyUnit = unitBySymbol.get(copyName);
+                    if (copyUnit == null && workspaceRoot != null) {
+                        // Fallback: search filesystem
+                        copyUnit = findCopybookInWorkspace(copyName, workspaceRoot, unitBySymbol);
+                    }
                     if (copyUnit != null) {
                         copybookDistance.put(copyName, currentDepth + 1);
                         queue.addLast(copyName);
+                        // Add to unitBySymbol for future lookups
+                        if (!unitBySymbol.containsKey(copyName)) {
+                            unitBySymbol.put(copyName, copyUnit);
+                        }
                     }
                 }
             }
@@ -611,5 +637,57 @@ public class ImpactAnalysisTool {
         }
 
         return distance;
+    }
+
+    /**
+     * Search workspace for a copybook file by name.
+     * Tries common extensions (.cpy, .cob, .cbl) and adds found file to unitBySymbol.
+     *
+     * @param copybookName Copybook name (without extension)
+     * @param workspaceRoot Root directory to search
+     * @param unitBySymbol Map to add found copybook to
+     * @return SourceUnit if found, null otherwise
+     */
+    private static SourceUnit findCopybookInWorkspace(String copybookName, Path workspaceRoot,
+                                                      Map<String, SourceUnit> unitBySymbol) {
+        String[] extensions = {".cpy", ".cob", ".cbl", ".copy"};
+        
+        try (Stream<Path> stream = Files.walk(workspaceRoot)) {
+            // Build variant names to search (original + uppercase)
+            Set<String> variants = new HashSet<>();
+            variants.add(copybookName);
+            variants.add(copybookName.toUpperCase(Locale.ROOT));
+            variants.add(copybookName.toLowerCase(Locale.ROOT));
+            
+            // Search for matching files with any copybook extension
+            Path found = stream
+                    .filter(Files::isRegularFile)
+                    .filter(path -> {
+                        String filename = path.getFileName().toString();
+                        // Check if filename (without extension) matches any variant
+                        for (String ext : extensions) {
+                            if (filename.endsWith(ext)) {
+                                String nameWithoutExt = filename.substring(0, filename.length() - ext.length());
+                                if (variants.contains(nameWithoutExt)) {
+                                    return true;
+                                }
+                            }
+                        }
+                        return false;
+                    })
+                    .findFirst()
+                    .orElse(null);
+            
+            if (found != null) {
+                String content = readText(found);
+                if (content != null) {
+                    return new SourceUnit(copybookName, found, content);
+                }
+            }
+        } catch (IOException e) {
+            // Silently continue on IOException
+        }
+        
+        return null;
     }
 }

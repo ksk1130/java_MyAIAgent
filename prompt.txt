@@ -1,5 +1,5 @@
 POST_CDテーブルのZIPCODEカラムの型変更を検討しています。
-C:\Users\kskan\Desktop\java_MyAIAgent\app\src\main\resources\cobol以下で、
+C:\Users\kskan\Desktop\java_MyAIAgent\app\src\main\resources\以下で、
 このテーブルを参照しているCOBOLファイルと、そこで使用されているCOPY句の中身までを再帰的に走査して、
 ZIPCODEに関連する変数を定義または利用している箇所をすべてリストアップしてファイルに保存してください。
 ファイルの保存場所はC:\Users\kskan\Desktop\java_MyAIAgent\impact_analysis_results.txtとしてください。
