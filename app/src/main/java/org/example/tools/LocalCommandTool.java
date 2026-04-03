@@ -36,7 +36,7 @@ public class LocalCommandTool {
      * @param command 実行する検索コマンド
      * @return 実行結果（標準出力・標準エラーを統合）
      */
-    @Tool("読み取り系のローカルコマンドを実行します（変更系は禁止）")
+    @Tool("テキスト検索には grep/grepJavaFiles/grepCobolFiles を優先してください。それらで対応できない場合のみ、読み取り系ローカルコマンド（rg/git status など）を実行します（変更系は禁止）")
     public String runSearchCommand(@P("実行する検索コマンド（読み取り系）") String command) {
         if (command == null || command.isBlank()) {
             return "ERROR: command is required";

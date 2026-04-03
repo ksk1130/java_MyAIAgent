@@ -63,6 +63,25 @@ public class GrepTool {
     }
 
     /**
+     * 指定ディレクトリ配下の COBOL ファイル（.cbl/.cob/.cpy）を対象に、キーワードまたは正規表現に一致した行を返します。
+     * COBOL プログラムやコピーブック内のキーワード・変数名を検索するときはこのツールを優先してください。
+     * Select-String や findstr などのコマンドより確実に動作します。
+     *
+     * @param rootDir 検索ルートディレクトリ
+     * @param keyword 検索キーワードまたは正規表現（例: ZIPCODE）
+     * @return "path:line:content" 形式の結果（改行区切り）
+     */
+    @Tool("COBOL/コピーブックファイル（.cbl/.cob/.cpy）を対象にキーワードを検索します。COBOLソースやコピーブック内の変数・項目名を調べるときはこのツールを使ってください")
+    public String grepCobolFiles(
+            @P("検索ルートディレクトリ（絶対/相対）") String rootDir,
+            @P("検索キーワードまたは正規表現（例: ZIPCODE）") String keyword) {
+        System.out.println("GrepCobolFilesツールを実行します: grepCobolFiles(rootDir=" + rootDir + ", keyword=" + keyword + ")");
+        System.out.flush();
+
+        return grepInternal(rootDir, keyword, "glob:**/*.{cbl,cob,cpy}", "GrepCobolFiles");
+    }
+
+    /**
      * 共通の grep 処理を実行します。
      *
      * @param rootDir 検索ルートディレクトリ

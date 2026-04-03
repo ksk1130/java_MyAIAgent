@@ -27,7 +27,7 @@ public class FileReaderTool {
 
     // 許可する拡張子（小文字で管理）
     private static final Set<String> ALLOWED_EXTS = Set.of(
-            "txt", "md", "json", "csv", "java", "py", "xml", "html", "htm", "yaml", "yml", "properties", "sql", "sh"
+            "txt", "md", "json", "csv", "java", "py", "xml", "html", "htm", "yaml", "yml", "properties", "sql", "sh", "cob", "cpy", "cbl"
     );
 
     // 代替エンコーディング（Windows 環境の SJIS 互換）

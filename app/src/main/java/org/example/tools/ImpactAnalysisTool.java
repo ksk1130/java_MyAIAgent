@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -37,6 +38,9 @@ public class ImpactAnalysisTool {
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(".java", ".cbl", ".cob", ".cpy");
     private static final Pattern TABLE_REFERENCE_PATTERN_TEMPLATE = Pattern.compile(
         "(?is)\\b(from|join|update|into)\\s+`?%s`?\\b");
+    /** COBOL の COPY 句からコピーブック名を抽出するパターンです。 */
+    private static final Pattern COBOL_COPY_PATTERN = Pattern.compile(
+        "(?im)^\\s*COPY\\s+['\"]?([A-Za-z0-9_-]+)['\"]?");
 
     /**
      * 解析対象のソース単位を表すレコードです。
@@ -73,6 +77,159 @@ public class ImpactAnalysisTool {
             @P("変更されたテーブル名（例: POST_CD）") String tableName,
             @P("探索ルートディレクトリの絶対パス（例: C:\\Users\\kskan\\Desktop\\java_MyAIAgent\\app\\src\\main\\resources\\cobol）") String rootDir) {
         return analyzeTableImpactInternal(tableName, rootDir);
+    }
+
+    /**
+     * テーブルのカラム型変更影響調査を行います。
+     * 指定テーブルを参照するファイルとその COPY 句を再帰走査し、
+     * 指定カラム名に関連する変数定義・利用箇所をまとめて1回で報告します。
+     * COBOL の影響調査にはこのツールを優先して使ってください。
+     *
+     * @param tableName  変更されたテーブル名（例: POST_CD）
+     * @param columnName 型変更対象のカラム名（例: ZIPCODE）
+     * @param rootDir    探索ルートディレクトリの絶対パス
+     * @return 影響ファイル・COPYブック・カラム参照箇所をまとめたレポート
+     */
+    @Tool("COBOLのカラム型変更影響調査: 指定テーブルを参照するCOBOLファイルとCOPY句を再帰走査し、指定カラム名に関連する変数定義・利用箇所をすべてまとめて報告します。COBOLの影響調査にはこのツールを使ってください")
+    public String analyzeColumnImpact(
+            @P("変更されたテーブル名（例: POST_CD）") String tableName,
+            @P("型変更対象のカラム名（例: ZIPCODE）") String columnName,
+            @P("探索ルートディレクトリの絶対パス（例: C:\\Users\\kskan\\Desktop\\java_MyAIAgent\\app\\src\\main\\resources\\cobol）") String rootDir) {
+
+        System.out.println("ImpactAnalysisツールを実行します: analyzeColumnImpact(tableName=" + tableName
+                + ", columnName=" + columnName + ", rootDir=" + rootDir + ")");
+        System.out.flush();
+
+        if (tableName == null || tableName.isBlank()) {
+            return "ERROR: tableName is required";
+        }
+        if (columnName == null || columnName.isBlank()) {
+            return "ERROR: columnName is required";
+        }
+
+        String normalizedTable = tableName.strip().toLowerCase(Locale.ROOT);
+        Path workspaceRoot = resolveRootDirectory(rootDir);
+        if (workspaceRoot == null) {
+            return "ERROR: invalid rootDir (directory not found): " + rootDir;
+        }
+
+        List<Path> sourceFiles = listSupportedSourceFiles(workspaceRoot);
+        if (sourceFiles.isEmpty()) {
+            return "ERROR: no supported source files found (*.java/*.cbl/*.cob/*.cpy)";
+        }
+
+        Map<String, SourceUnit> unitBySymbol = new LinkedHashMap<>();
+        for (Path file : sourceFiles) {
+            String content = readText(file);
+            if (content == null) {
+                continue;
+            }
+            String symbolName = detectSymbolName(file, content);
+            if (symbolName == null || symbolName.isBlank()) {
+                continue;
+            }
+            unitBySymbol.put(symbolName, new SourceUnit(symbolName, file, content));
+        }
+
+        Set<String> directUnits = unitBySymbol.values().stream()
+                .filter(unit -> containsTableReference(unit.content(), normalizedTable))
+                .map(SourceUnit::symbolName)
+                .collect(Collectors.toCollection(HashSet::new));
+
+        if (directUnits.isEmpty()) {
+            return "table=" + tableName + "\ncolumn=" + columnName + "\nERROR: No direct SQL reference found.";
+        }
+
+        Map<String, Set<String>> callersByCallee = buildCallersByCallee(unitBySymbol);
+        Map<String, Integer> distanceBySymbol = bfsReverseDependencies(directUnits, callersByCallee);
+        Map<String, Integer> copybookDistanceMap = buildCopybookChain(distanceBySymbol, unitBySymbol);
+
+        List<Map.Entry<String, Integer>> sortedFiles = new ArrayList<>(distanceBySymbol.entrySet());
+        sortedFiles.sort(Comparator.comparingInt(Map.Entry<String, Integer>::getValue)
+                .thenComparing(Map.Entry::getKey));
+
+        List<Map.Entry<String, Integer>> sortedCopybooks = new ArrayList<>(copybookDistanceMap.entrySet());
+        sortedCopybooks.sort(Comparator.comparingInt(Map.Entry<String, Integer>::getValue)
+                .thenComparing(Map.Entry::getKey));
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("table=").append(tableName).append('\n');
+        sb.append("column=").append(columnName).append('\n');
+        sb.append('\n');
+
+        // 影響ファイル一覧
+        sb.append("=== 影響ファイル (").append(distanceBySymbol.size()).append(" 件) ===\n");
+        for (Map.Entry<String, Integer> entry : sortedFiles) {
+            SourceUnit unit = unitBySymbol.get(entry.getKey());
+            if (unit == null) continue;
+            String relative = workspaceRoot.relativize(unit.filePath()).toString().replace('\\', '/');
+            sb.append("- distance=").append(entry.getValue())
+                    .append(" file=").append(relative).append('\n');
+        }
+
+        // COPYブック一覧
+        if (!copybookDistanceMap.isEmpty()) {
+            sb.append('\n');
+            sb.append("=== COPYブック (").append(copybookDistanceMap.size()).append(" 件) ===\n");
+            for (Map.Entry<String, Integer> entry : sortedCopybooks) {
+                SourceUnit unit = unitBySymbol.get(entry.getKey());
+                if (unit == null) continue;
+                String relative = workspaceRoot.relativize(unit.filePath()).toString().replace('\\', '/');
+                sb.append("- copyDepth=").append(entry.getValue())
+                        .append(" file=").append(relative).append('\n');
+            }
+        }
+
+        // 全対象ファイル（影響ファイル＋COPYブック）でカラム名参照箇所を検索
+        sb.append('\n');
+        sb.append("=== ").append(columnName).append(" 参照箇所 ===\n");
+
+        Map<String, Integer> allTargets = new LinkedHashMap<>(distanceBySymbol);
+        copybookDistanceMap.forEach((k, v) -> allTargets.putIfAbsent(k, v));
+
+        List<Map.Entry<String, Integer>> allSorted = new ArrayList<>(allTargets.entrySet());
+        allSorted.sort(Comparator.comparingInt(Map.Entry<String, Integer>::getValue)
+                .thenComparing(Map.Entry::getKey));
+
+        String colLower = columnName.strip().toLowerCase(Locale.ROOT);
+        int totalRefs = 0;
+
+        for (Map.Entry<String, Integer> entry : allSorted) {
+            SourceUnit unit = unitBySymbol.get(entry.getKey());
+            if (unit == null) continue;
+            List<String> hits = searchColumnInContent(unit.content(), colLower);
+            if (hits.isEmpty()) continue;
+            totalRefs += hits.size();
+            String relative = workspaceRoot.relativize(unit.filePath()).toString().replace('\\', '/');
+            sb.append('[').append(relative).append("] (").append(hits.size()).append(" 箇所)\n");
+            for (String hit : hits) {
+                sb.append(hit).append('\n');
+            }
+        }
+
+        if (totalRefs == 0) {
+            sb.append("（").append(columnName).append(" への参照なし）\n");
+        }
+
+        return sb.toString().trim();
+    }
+
+    /**
+     * ファイル内容からカラム名を含む行を抽出します（大文字小文字を区別しません）。
+     *
+     * @param content  ファイル内容
+     * @param colLower 小文字化済みカラム名
+     * @return "  line N: 内容" 形式の一覧
+     */
+    private static List<String> searchColumnInContent(String content, String colLower) {
+        List<String> results = new ArrayList<>();
+        String[] lines = content.split("\n");
+        for (int i = 0; i < lines.length; i++) {
+            if (lines[i].toLowerCase(Locale.ROOT).contains(colLower)) {
+                results.add("  line " + (i + 1) + ": " + lines[i].stripTrailing());
+            }
+        }
+        return results;
     }
 
     /**
@@ -135,6 +292,9 @@ public class ImpactAnalysisTool {
         sorted.sort(Comparator.comparingInt(Map.Entry<String, Integer>::getValue)
                 .thenComparing(Map.Entry::getKey));
 
+        // 影響プログラムから COPY 句を前向きに再帰追跡してコピーブックを収集します。
+        Map<String, Integer> copybookDistanceMap = buildCopybookChain(distanceBySymbol, unitBySymbol);
+
         StringBuilder sb = new StringBuilder();
         sb.append("table=").append(tableName).append('\n');
         sb.append("directMatches=").append(directUnits.size()).append('\n');
@@ -154,6 +314,26 @@ public class ImpactAnalysisTool {
                     .append(" symbol=").append(symbolName)
                     .append(" file=").append(relative)
                     .append('\n');
+        }
+
+        if (!copybookDistanceMap.isEmpty()) {
+            sb.append("copybooks:\n");
+            List<Map.Entry<String, Integer>> sortedCopybooks = new ArrayList<>(copybookDistanceMap.entrySet());
+            sortedCopybooks.sort(Comparator.comparingInt(Map.Entry<String, Integer>::getValue)
+                    .thenComparing(Map.Entry::getKey));
+            for (Map.Entry<String, Integer> entry : sortedCopybooks) {
+                String symbolName = entry.getKey();
+                int depth = entry.getValue();
+                SourceUnit unit = unitBySymbol.get(symbolName);
+                if (unit == null) {
+                    continue;
+                }
+                String relative = workspaceRoot.relativize(unit.filePath()).toString().replace('\\', '/');
+                sb.append("- copyDepth=").append(depth)
+                        .append(" symbol=").append(symbolName)
+                        .append(" file=").append(relative)
+                        .append('\n');
+            }
         }
 
         return sb.toString().trim();
@@ -304,6 +484,7 @@ public class ImpactAnalysisTool {
 
     /**
      * 内容中にシンボル参照が存在するか判定します。
+     * COBOL の COPY 句も参照として扱います。
      *
      * @param lowerContent 小文字化済み内容
      * @param callee シンボル名
@@ -323,7 +504,81 @@ public class ImpactAnalysisTool {
         }
 
         Pattern cobolPerformRef = Pattern.compile("(?im)\\bperform\\s+" + Pattern.quote(calleeLower) + "\\b");
-        return cobolPerformRef.matcher(lowerContent).find();
+        if (cobolPerformRef.matcher(lowerContent).find()) {
+            return true;
+        }
+
+        Pattern cobolCopyRef = Pattern.compile("(?im)\\bcopy\\s+['\"]?" + Pattern.quote(calleeLower) + "['\"]?");
+        return cobolCopyRef.matcher(lowerContent).find();
+    }
+
+    /**
+     * COBOL ソースから COPY 句で参照しているコピーブック名を抽出します。
+     *
+     * @param content ファイル内容
+     * @return コピーブック名の集合（大文字正規化済み）
+     */
+    private static Set<String> extractCopyNames(String content) {
+        Set<String> names = new LinkedHashSet<>();
+        Matcher m = COBOL_COPY_PATTERN.matcher(content);
+        while (m.find()) {
+            names.add(m.group(1).toUpperCase(Locale.ROOT));
+        }
+        return names;
+    }
+
+    /**
+     * 影響プログラムから COPY 句を前向きに再帰追跡し、コピーブックの距離マップを返します。
+     * コピーブックがさらに別のコピーブックを COPY している場合も再帰的に追跡します。
+     *
+     * @param impactedUnits  逆 BFS で求めた影響シンボルと距離のマップ
+     * @param unitBySymbol   シンボルとソース単位の対応
+     * @return コピーブックシンボルと COPY 深さのマップ
+     */
+    private static Map<String, Integer> buildCopybookChain(Map<String, Integer> impactedUnits,
+                                                           Map<String, SourceUnit> unitBySymbol) {
+        Map<String, Integer> copybookDistance = new LinkedHashMap<>();
+        ArrayDeque<String> queue = new ArrayDeque<>();
+
+        // 影響プログラムそれぞれの COPY 句を起点に追跡開始します。
+        for (Map.Entry<String, Integer> entry : impactedUnits.entrySet()) {
+            String symbol = entry.getKey();
+            SourceUnit unit = unitBySymbol.get(symbol);
+            if (unit == null) {
+                continue;
+            }
+            for (String copyName : extractCopyNames(unit.content())) {
+                // 既に impactedUnits に含まれるシンボルは除外します。
+                if (!impactedUnits.containsKey(copyName) && !copybookDistance.containsKey(copyName)) {
+                    SourceUnit copyUnit = unitBySymbol.get(copyName);
+                    if (copyUnit != null) {
+                        copybookDistance.put(copyName, 1);
+                        queue.add(copyName);
+                    }
+                }
+            }
+        }
+
+        // コピーブックが参照するコピーブックも再帰的に追跡します。
+        while (!queue.isEmpty()) {
+            String current = queue.removeFirst();
+            int currentDepth = copybookDistance.getOrDefault(current, 1);
+            SourceUnit unit = unitBySymbol.get(current);
+            if (unit == null) {
+                continue;
+            }
+            for (String copyName : extractCopyNames(unit.content())) {
+                if (!impactedUnits.containsKey(copyName) && !copybookDistance.containsKey(copyName)) {
+                    SourceUnit copyUnit = unitBySymbol.get(copyName);
+                    if (copyUnit != null) {
+                        copybookDistance.put(copyName, currentDepth + 1);
+                        queue.addLast(copyName);
+                    }
+                }
+            }
+        }
+
+        return copybookDistance;
     }
 
     /**
