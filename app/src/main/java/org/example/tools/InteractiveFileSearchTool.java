@@ -1,5 +1,6 @@
 package org.example.tools;
 
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 
 import java.nio.file.Path;
@@ -29,8 +30,10 @@ public class InteractiveFileSearchTool {
      * @param fileNamePattern ファイル名 glob パターン
      * @return 選択ファイルの内容、またはエラーメッセージ
      */
-    @Tool
-    public String interactiveFindAndRead(String rootDir, String fileNamePattern) {
+    @Tool("検索結果をユーザに選択させて選択ファイルの内容を返します")
+    public String interactiveFindAndRead(
+            @P("検索ルートディレクトリ（絶対/相対）") String rootDir,
+            @P("ファイル名のglobパターン（例: **/*.txt）") String fileNamePattern) {
         System.out.println("InteractiveFileSearchツールを実行します: interactiveFindAndRead(rootDir=" + rootDir + ", pattern=" + fileNamePattern + ")");
         System.out.flush();
         try {

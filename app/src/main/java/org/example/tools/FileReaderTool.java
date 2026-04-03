@@ -1,5 +1,6 @@
 package org.example.tools;
 
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 
 import java.nio.file.Path;
@@ -38,8 +39,8 @@ public class FileReaderTool {
      * @param path 読み込むファイルパス
      * @return ファイル内容、またはエラーメッセージ
      */
-    @Tool
-    public String readFile(String path) {
+    @Tool("テキストファイルを読み込み内容を返します")
+    public String readFile(@P("読み込むファイルのパス（絶対/相対）") String path) {
         System.out.println("FileReaderツールを実行します: readFile(path=" + path + ")");
         System.out.flush();
         try {

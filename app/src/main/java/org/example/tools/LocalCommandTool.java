@@ -1,5 +1,6 @@
 package org.example.tools;
 
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -35,8 +36,8 @@ public class LocalCommandTool {
      * @param command 実行する検索コマンド
      * @return 実行結果（標準出力・標準エラーを統合）
      */
-    @Tool
-    public String runSearchCommand(String command) {
+    @Tool("読み取り系のローカルコマンドを実行します（変更系は禁止）")
+    public String runSearchCommand(@P("実行する検索コマンド（読み取り系）") String command) {
         if (command == null || command.isBlank()) {
             return "ERROR: command is required";
         }

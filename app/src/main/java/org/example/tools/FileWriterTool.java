@@ -1,5 +1,6 @@
 package org.example.tools;
 
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 
 import java.nio.file.Files;
@@ -40,8 +41,10 @@ public class FileWriterTool {
      * @param content 書き込む内容（UTF-8）
      * @return 書き込み結果のメッセージ
      */
-    @Tool
-    public String writeFile(String path, String content) {
+    @Tool("指定したパスにテキストファイルを書き込みます")
+    public String writeFile(
+            @P("書き込み先ファイルパス（絶対/相対）") String path,
+            @P("書き込む内容（UTF-8）") String content) {
         int contentLength = content == null ? 0 : content.length();
         System.out.println("FileWriterツールを実行します: writeFile(path=" + path + ", contentLength=" + contentLength + ")");
         System.out.flush();

@@ -1,5 +1,6 @@
 package org.example.tools;
 
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 
 import java.nio.file.Path;
@@ -39,8 +40,10 @@ public class FileSearchTool {
      * @param fileNamePattern ファイル名 glob パターン
      * @return JSON 形式の検索結果、またはエラーメッセージ
      */
-    @Tool
-    public String findFiles(String rootDir, String fileNamePattern) {
+    @Tool("指定ディレクトリ配下から glob パターンに一致するファイルを検索します")
+    public String findFiles(
+            @P("検索ルートディレクトリ（絶対/相対パス）") String rootDir,
+            @P("ファイル名のglobパターン（例: **/*.java）") String fileNamePattern) {
         System.out.println("FileSearchツールを実行します: findFiles(rootDir=" + rootDir + ", pattern=" + fileNamePattern + ")");
         System.out.flush();
         try {

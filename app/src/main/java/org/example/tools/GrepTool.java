@@ -1,5 +1,6 @@
 package org.example.tools;
 
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 
 import java.io.IOException;
@@ -33,8 +34,10 @@ public class GrepTool {
      * @param keyword 検索キーワード
      * @return "path:line:content" 形式の結果（改行区切り）
      */
-    @Tool
-    public String grep(String rootDir, String keyword) {
+    @Tool("指定ディレクトリ配下を再帰走査し、キーワードに一致した行を返します")
+    public String grep(
+            @P("検索ルートディレクトリ（絶対/相対）") String rootDir,
+            @P("検索キーワードまたは正規表現") String keyword) {
         System.out.println("Grepツールを実行します: grep(rootDir=" + rootDir + ", keyword=" + keyword + ")");
         System.out.flush();
 
@@ -49,8 +52,10 @@ public class GrepTool {
      * @param keyword 検索キーワードまたは正規表現
      * @return "path:line:content" 形式の結果（改行区切り）
      */
-    @Tool
-    public String grepJavaFiles(String rootDir, String keyword) {
+    @Tool("指定ディレクトリ配下の Java ファイルのみを対象に検索します（キーワード/正規表現）")
+    public String grepJavaFiles(
+            @P("検索ルートディレクトリ（絶対/相対）") String rootDir,
+            @P("検索キーワードまたは正規表現") String keyword) {
         System.out.println("GrepJavaFilesツールを実行します: grepJavaFiles(rootDir=" + rootDir + ", keyword=" + keyword + ")");
         System.out.flush();
 

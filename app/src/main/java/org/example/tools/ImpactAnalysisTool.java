@@ -1,5 +1,7 @@
 package org.example.tools;
 
+
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
 
 import java.io.IOException;
@@ -47,13 +49,14 @@ public class ImpactAnalysisTool {
     }
 
     /**
-     * テーブル名から影響候補ファイルを推移的に列挙します。
+     * テーブル名から影響候補ファイルを推移的に列挙します（探索はワーキングディレクトリ全体）。
      *
-     * @param tableName 変更されたテーブル名（例: dummy_table）
+     * @param tableName 変更されたテーブル名（例: POST_CD）
      * @return 影響候補のレポート
      */
-    @Tool
-    public String analyzeTableImpact(String tableName) {
+    @Tool("変更されたテーブル名を受け取り、ワーキングディレクトリ全体を対象に影響候補ファイルを推移的に列挙します")
+    public String analyzeTableImpact(
+            @P("変更されたテーブル名（例: POST_CD）") String tableName) {
         return analyzeTableImpactInternal(tableName, null);
     }
 
@@ -61,12 +64,14 @@ public class ImpactAnalysisTool {
      * テーブル名と探索ルートから影響候補ファイルを推移的に列挙します。
      * rootDir が相対パスの場合は user.dir 基準で解決します。
      *
-     * @param tableName 変更されたテーブル名（例: dummy_table）
-     * @param rootDir 探索ルートディレクトリ（絶対/相対）
+     * @param tableName 変更されたテーブル名（例: POST_CD）
+     * @param rootDir 探索ルートディレクトリの絶対パス（例: C:\Users\kskan\Desktop\java_MyAIAgent\app\src\main\resources\cobol）
      * @return 影響候補のレポート
      */
-    @Tool
-    public String analyzeTableImpactInRoot(String tableName, String rootDir) {
+    @Tool("変更されたテーブル名と探索ルートディレクトリを受け取り、そのディレクトリ配下を対象に影響候補ファイルを推移的に列挙します")
+    public String analyzeTableImpactInRoot(
+            @P("変更されたテーブル名（例: POST_CD）") String tableName,
+            @P("探索ルートディレクトリの絶対パス（例: C:\\Users\\kskan\\Desktop\\java_MyAIAgent\\app\\src\\main\\resources\\cobol）") String rootDir) {
         return analyzeTableImpactInternal(tableName, rootDir);
     }
 

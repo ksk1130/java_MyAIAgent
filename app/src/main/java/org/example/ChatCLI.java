@@ -11,6 +11,7 @@ import org.example.tools.FileReaderTool;
 import org.example.tools.FileWriterTool;
 import org.example.tools.ImpactAnalysisTool;
 import org.example.tools.LocalCommandTool;
+import org.example.tools.GrepTool;
 
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -264,6 +265,7 @@ public class ChatCLI {
             5. **ImpactAnalysisToolのフル活用**: テーブル変更の影響調査では ImpactAnalysisTool を最優先で使い、得られたファイルリストに対して自動的に詳細な Select-String やファイル読み込みを行い、影響の全容（波及経路）を明らかにしてください。
 
             ツール選択・実行ルール:
+            - GrepはまずGrepToolを試し、もしうまくいかなければ LocalCommandTool を使って PowerShell の Select-String コマンドで同様の検索を行ってください。
             - 検索や調査が必要な場合は LocalCommandTool を使ってください。
             - 前提となる環境はWindows 11で、PowerShellが利用可能です。
             - ツール実行後は結果を要約し、次のステップを具体的に決定してください。
@@ -942,7 +944,7 @@ public class ChatCLI {
         Assistant assistant = AiServices.builder(Assistant.class)
                 .chatModel(model)
                 .chatMemory(chatMemory)
-                .tools(new Calculator(), new FileReaderTool(), new FileWriterTool(), new ImpactAnalysisTool(), localCommandTool)
+                .tools(new Calculator(), new FileReaderTool(), new FileWriterTool(), new ImpactAnalysisTool(), localCommandTool, new GrepTool())
                 .build();
         String aiResponse = runAgentStepLoop(assistant, message);
         System.out.println(renderWithSyntaxHighlight(aiResponse, isColorEnabled()));
