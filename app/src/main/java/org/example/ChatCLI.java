@@ -1014,7 +1014,17 @@ public class ChatCLI {
                     }
                 }
             }
-            default -> System.err.println(UNKNOWN_ARGUMENT_MESSAGE);
+            default -> {
+                // Multiple arguments: if first arg is "chat" or "agent", ignore it and run interactive mode
+                // This handles cases like "chat agent" (incorrect order but user-friendly error handling)
+                String firstArg = args[0].strip().toLowerCase();
+                if ("chat".equalsIgnoreCase(firstArg) || "agent".equalsIgnoreCase(firstArg)) {
+                    System.err.println("警告: 正しい引数順序は 'agent chat' です。ChatCLI 対話モードで起動します。");
+                    runChat();
+                } else {
+                    System.err.println(UNKNOWN_ARGUMENT_MESSAGE);
+                }
+            }
         }
     }
 }

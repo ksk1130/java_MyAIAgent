@@ -1,17 +1,20 @@
 @echo off
-REM run.bat [prompt-file]
-REM If a prompt file is provided, read it and set CHAT_SYSTEM_PROMPT and CHAT_AUTO_APPROVE=true, then run the app.
+REM run.bat - Launch script for MyAIAgent
+REM 使い方:
+REM   run.bat chat           - ChatCLI 対話モード（従来版）
+REM   run.bat agent chat     - AgentChatCLI 対話モード（Agent対応版）
+REM   run.bat <message>      - ChatCLI 単発モード
+REM   run.bat agent <message> - AgentChatCLI 単発モード
 
 if "%~1"=="" (
-  echo Starting in interactive mode...
-  call "%~dp0gradlew.bat" :app:run
+  REM デフォルト: ChatCLI 対話モード
+  echo Starting ChatCLI in interactive mode...
+  call "%~dp0gradlew.bat" :app:run --args="chat"
   exit /b %ERRORLEVEL%
 )
 
-set "PROMPT_FILE=%~1"
-if not exist "%PROMPT_FILE%" (
-  echo Prompt file not found: %PROMPT_FILE%
-  exit /b 1
-)
+REM 引数をそのまま App.java に渡す
+echo Starting application with arguments: %*
+call "%~dp0gradlew.bat" :app:run --args="%*"
+exit /b %ERRORLEVEL%
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$p = Get-Content -Raw -LiteralPath '%PROMPT_FILE%'; $env:CHAT_SYSTEM_PROMPT = $p; $env:CHAT_AUTO_APPROVE = 'true'; & '%~dp0gradlew.bat' ':app:run'"

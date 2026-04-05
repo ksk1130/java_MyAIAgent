@@ -26,11 +26,15 @@ dependencies {
     // Include LangChain4j artifacts
     implementation 'dev.langchain4j:langchain4j:1.12.2'
     implementation 'dev.langchain4j:langchain4j-open-ai:1.12.2'
-
-    // Add AiServices support (should be included in langchain4j)
+    // Agentic Services: Sequential/Supervisor workflow patterns (Incubating)
+    // Source: https://mvnrepository.com/artifact/dev.langchain4j/langchain4j-agentic
+    implementation 'dev.langchain4j:langchain4j-agentic:1.12.2-beta22'
 
     // JSON Schema validation (networknt) for LLM responses
     implementation 'com.networknt:json-schema-validator:1.0.79'
+
+    // Gson: JSON serialization/deserialization
+    implementation 'com.google.code.gson:gson:2.10.1'
 
     // Provide a simple SLF4J binding so LangChain4j logs are visible
     runtimeOnly 'org.slf4j:slf4j-simple:2.0.7'
@@ -48,8 +52,8 @@ java {
 
 application {
     // Define the main class for the application.
-    // Changed to start the ChatCLI entrypoint so chat commands are handled.
-    mainClass = 'org.example.ChatCLI'
+    // App.java が ChatCLI と AgentChatCLI の両方をサポートするエントリポイント
+    mainClass = 'org.example.App'
     // Ensure JVM uses UTF-8 file.encoding so console output (Japanese) doesn't mojibake on Windows
     applicationDefaultJvmArgs = ['-Dfile.encoding=UTF-8']
 }
@@ -161,24 +165,57 @@ tasks.register('createPortablePackage') {
             fileset(dir: jreOutputDir)
         }
 
-        // Create launcher script - prefer root-level run.bat if present, else fallback to scripts/run.bat
+        // Create launcher script - Generate a simple launcher that works with portable JRE
         def runBat = new File(appPackageDir, 'run.bat')
-        def batSource1 = new File(projectDir, 'run.bat')
-        def batSource2 = new File(projectDir, 'scripts/run.bat')
-        if (batSource1.exists()) {
-            def batContent = batSource1.text
-            // For distribution: replace gradlew.bat calls with direct java.exe invocation
-            batContent = batContent.replace('call "%~dp0gradlew.bat" :app:run',
-                    '".\\jre\\bin\\java.exe" -Dfile.encoding=UTF-8 -cp "lib\\*" org.example.ChatCLI')
-            batContent = batContent.replace('& \'%~dp0gradlew.bat\' \':app:run\'',
-                    '& \'.\\jre\\bin\\java.exe\' -Dfile.encoding=UTF-8 -cp \'lib\\*\' org.example.ChatCLI')
-            runBat.text = batContent
-        } else if (batSource2.exists()) {
-            runBat.text = batSource2.text
-        } else {
-            logger.lifecycle('WARNING: No run.bat found in project root or scripts/. Skipping launcher script creation.')
-        }
-        if (runBat.exists()) logger.lifecycle("✓ Launcher script created: ${runBat.absolutePath}")
+        def batContent = """@echo off
+REM Launch script for MyAIAgent with embedded JRE
+REM 使い方:
+REM   run.bat chat           - ChatCLI 対話モード（従来版）
+REM   run.bat agent chat     - AgentChatCLI 対話モード（Agent対応版）
+REM   run.bat <message>      - 単発メッセージモード
+
+setlocal enabledelayedexpansion
+
+REM Get the directory where this script is located
+for /f "delims=" %%i in ('cd') do set SCRIPT_DIR=%%i
+
+REM Set paths
+set JRE_DIR=%SCRIPT_DIR%\\jre
+set JAVA_EXE=%JRE_DIR%\\bin\\java.exe
+set LIB_DIR=%SCRIPT_DIR%\\lib
+
+REM Check if JRE exists
+if not exist "%JAVA_EXE%" (
+    echo エラー: JREが見つかりません: %JAVA_EXE%
+    pause
+    exit /b 1
+)
+
+REM Build classpath from all JARs in lib directory
+setlocal enabledelayedexpansion
+set CLASSPATH=
+for %%f in ("%LIB_DIR%\\*.jar") do (
+    if "!CLASSPATH!"=="" (
+        set "CLASSPATH=%%f"
+    ) else (
+        set "CLASSPATH=!CLASSPATH!;%%f"
+    )
+)
+
+REM Launch application with UTF-8 encoding
+REM メインクラスは org.example.App （ChatCLI/AgentChatCLI をルーティング）
+if "%%1"=="" (
+    echo ChatCLI を対話モードで起動します...
+    "%JAVA_EXE%" -Dfile.encoding=UTF-8 -cp "!CLASSPATH!" org.example.App chat
+) else (
+    echo アプリケーションを起動します: %*
+    "%JAVA_EXE%" -Dfile.encoding=UTF-8 -cp "!CLASSPATH!" org.example.App %*
+)
+
+endlocal
+"""
+        runBat.text = batContent
+        logger.lifecycle("✓ Launcher script created: ${runBat.absolutePath}")
 
         // Create README - prefer scripts/README.txt if present
         def readmeTxt = new File(appPackageDir, 'README.txt')
