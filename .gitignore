@@ -8,3 +8,7 @@ build
 .claude
 
 app/bin/main/cobol
+app/cobol_dependencies
+cobol_dependencies
+derby.log
+build*.txt

@@ -320,6 +320,278 @@ AiServices 未登録（クラスのみ存在）:
 | `TF_B` | 会話メモリ（MessageWindowChatMemory）のサンプル。 |
 | `TF_C` | AiServices と Calculator ツールを組み合わせたサンプル。 |
 
+## COBOL 依存関係分析ツール
+
+### 概要
+COBOL プログラムの依存関係を自動検出し、Apache Derby データベースに登録するツール。
+スキーマ変更時の影響範囲分析や、プログラム間の呼び出し関係を可視化します。
+
+### 実行方法
+
+**デフォルトパスで実行：**
+```powershell
+.\gradlew.bat app:runCobolAnalyzer
+```
+
+**カスタムパスで実行（推奨）：**
+```powershell
+.\gradlew.bat app:runCobolAnalyzer --args="app/src/main/resources/cobol"
+```
+
+**DB をリセットして実行（--clean オプション）：**
+```powershell
+# 重複キーエラーが出た場合は、DB を削除してから再実行
+.\gradlew.bat app:runCobolAnalyzer --args="--clean app/src/main/resources/cobol"
+```
+
+`--clean` フラグを指定すると、`cobol_dependencies` ディレクトリを削除してから新規作成します。
+複数回実行する場合や、既存の DB にエラーがある場合に使用してください。
+
+または相対パスで指定：
+```powershell
+.\gradlew.bat app:runCobolAnalyzer --args="src/main/resources/cobol"
+```
+
+### 検出内容
+
+| 項目 | 説明 |
+|-----|------|
+| **PROGRAM-ID** | 各COBOL プログラムのID を自動抽出 |
+| **テーブルアクセス** | INSERT/SELECT/UPDATE/DELETE句を解析してテーブル・カラムアクセスを検出 |
+| **CALL 依存関係** | プログラム間の呼び出し関係（`CALL` ステートメント）を検出 |
+| **推移的影響** | A → B → C という推移的な依存関係も追跡可能 |
+
+### 出力
+
+実行後、`cobol_dependencies` Derby データベースに以下テーブルが作成・更新されます：
+
+- `cobol_programs` - プログラム情報
+- `table_columns` - テーブル・カラム定義
+- `cobol_table_access` - アクセス情報（INSERT/SELECT/UPDATE/DELETE）
+- `cobol_call_dependency` - CALL 依存関係
+
+### 使用例
+
+**例1：デフォルトパスから検出**
+```powershell
+.\gradlew.bat app:runCobolAnalyzer
+```
+
+**例2：カスタムパスから検出**
+```powershell
+.\gradlew.bat app:runCobolAnalyzer --args="app/src/main/resources/cobol"
+```
+
+出力例：
+```
+===== COBOL 依存関係検出ツール =====
+COBOL ディレクトリ: C:\...\app\src\main\resources\cobol
+検出ファイル数: 2
+
+[解析] call_symfo_inst.cbl
+  - CALL: symfo_inst
+
+[解析] symfo_inst.cbl
+  - INSERT: POST_CD
+
+===== 依存関係グラフ =====
+プログラム名                    ファイルパス                              依存タイプ
+────────────────────────────────────────────────────────────────────────────────────
+call-symfo-inst                 C:\...\call_symfo_inst.cbl         INDIRECT (via symfo-inst)
+symfo-inst                      C:\...\symfo_inst.cbl              DIRECT
+```
+
+#### 推移的依存関係の検出について
+
+上記例では、スキーマ変更の影響範囲を自動検出しています：
+
+- **DIRECT**: `symfo_inst` が直接 `POST_CD` テーブルの `ZIPCODE` 列にアクセス（INSERT）
+- **INDIRECT (via symfo_inst)**: `call_symfo_inst` は `symfo_inst` をCALL しており、`symfo_inst` を通じて間接的に `POST_CD` にアクセス
+
+つまり、`POST_CD.ZIPCODE` のスキーマを変更すると、推移的に `call_symfo_inst.cbl` にも影響が出ることを自動検出します。
+
+### 実装
+- **言語**: Java 21
+- **データベース**: Apache Derby (Pure Java、外部バイナリ不要)
+- **パッケージ**: `org.example.cobol.CobolDependencyAnalyzer`
+
+## ハイブリッド統合：CobolColumnImpactAgent × CobolDependencyAnalyzer
+
+CobolDependencyAnalyzer の依存関係データベースと CobolColumnImpactAgent の自然言語処理を統合し、以下を実現します：
+
+### 概要
+
+```
+1. CobolDependencyAnalyzer が Derby DB 生成
+   ↓
+2. CobolColumnImpactAgent が自然言語入力を処理
+   ↓
+3. DatabaseQueryAgent が DB から該当プログラム＋推移的影響を検索
+   ↓
+4. 統合分析結果を出力
+```
+
+### 使用フロー
+
+**Step 1: 依存関係 DB を生成**
+```powershell
+.\gradlew.bat app:runCobolAnalyzer --args="app/src/main/resources/cobol"
+```
+
+**Step 2: 統合分析を実行（自然言語入力）**
+```powershell
+.\gradlew.bat :app:runCobolColumnImpact --args="POST_CDテーブルのZIPCODEカラムの変更影響を調査"
+```
+
+または対話モード：
+```powershell
+.\gradlew.bat :app:runCobolColumnImpact
+# > POST_CDテーブルのZIPCODEカラムの変更影響を調査
+```
+
+### 統合分析のメリット
+
+| 項目 | CobolColumnImpactAgent のみ | ハイブリッド統合 |
+|------|-------|---------|
+| **自然言語入力** | ✅ | ✅ |
+| **変数定義キャプチャ** | ✅ | ✅ |
+| **DIRECT 依存関係** | × | ✅ |
+| **推移的影響（INDIRECT）** | × | ✅ |
+| **CALL グラフ表示** | × | ✅ |
+| **DB 永続化** | × | ✅ |
+
+### DatabaseQueryAgent について
+
+`DatabaseQueryAgent` は Derby DB をクエリして以下を検索します：
+
+- **DIRECT アクセス**: テーブル・カラムに直接アクセスするプログラム
+- **INDIRECT アクセス**: CALL を通じて間接的にアクセスするプログラム（推移的依存関係）
+- **CALL グラフ**: プログラム間の呼び出し関係を構築
+
+#### テスト実行
+
+```powershell
+# 依存関係 DB が存在する状態で実行
+.\gradlew.bat app:runDatabaseQueryTest
+```
+
+出力例：
+```
+[Direct Access Programs]
+  - symfo_inst (C:\...\symfo_inst.cbl)
+
+[Indirect Access Programs (via CALL)]
+  - call_symfo_inst (C:\...\call_symfo_inst.cbl)
+    Access Path: via symfo_inst [Level 1]
+
+[CALL Dependency Graph]
+  call_symfo_inst calls: [symfo_inst]
+```
+
+## Step 3: 完全なワークフロー実行（CobolColumnImpactAgent 統合）
+
+CobolColumnImpactAgent の完全な統合実装により、以下の統合ワークフローが実現されました：
+
+### 完全なワークフロー フロー
+
+```
+ユーザ入力（自然言語）
+  ↓
+IntentExtractorAgent
+  → TABLE/COLUMN を自然言語から抽出 (LLM)
+  ↓
+DatabaseQueryAgent ⭐
+  → Derby DB をクエリ
+  → DIRECT/INDIRECT プログラムを検索
+  ↓
+FileScannerAgent
+  → 検出されたプログラムのファイルをスキャン
+  ↓
+CobolAnalyzerAgent
+  → 変数定義を抽出（DB 結果と統合）
+  ↓
+ResultSaverAgent
+  → 統合分析結果をマークダウンで保存
+```
+
+### 使用方法
+
+**Step 1: 依存関係 DB を生成**
+```powershell
+.\gradlew.bat app:runCobolAnalyzer --args="app/src/main/resources/cobol"
+```
+
+**Step 2: 完全統合ワークフローを実行**
+
+デフォルト（POST_CD/ZIPCODE を自動分析）：
+```powershell
+.\gradlew.bat app:runIntegratedAnalysisDemo
+```
+
+カスタムリクエスト（自然言語で指定）：
+```powershell
+.\gradlew.bat app:runIntegratedAnalysisDemo --args="USER_MASTER テーブルの ID カラムの影響分析"
+```
+
+### 出力例
+
+生成されたレポート（`cobol_impact_analysis.md`）：
+
+```markdown
+# COBOL Column Impact Analysis Report
+
+## Analysis Parameters
+- **Table Name**: `POST_CD`
+- **Column Name**: `ZIPCODE`
+- **Timestamp**: 2026-04-06 16:30:00
+
+## Dependency Analysis (DB Query Results)
+
+### Direct Access Programs
+| Program ID | File Path | Access Type |
+|---|---|---|
+| `symfo_inst` | `C:\...\symfo_inst.cbl` | DIRECT |
+
+### Indirect Access Programs (via CALL)
+| Program ID | File Path | Access Path | Level |
+|---|---|---|---|
+| `call_symfo_inst` | `C:\...\call_symfo_inst.cbl` | via symfo_inst | 1 |
+
+### CALL Dependency Graph
+```
+call_symfo_inst calls: [symfo_inst]
+```
+
+### Impact Summary
+- **Direct Impact**: 1 program(s)
+- **Indirect Impact**: 1 program(s)
+- **Total Impact**: 2 program(s)
+
+#### Risk Assessment
+- **Risk Level**: **Medium**
+- **Description**: 2 program(s) affected.
+
+## Identified Variables
+| Variable Name | Level | Data Type | Description |
+|---|---|---|---|
+| `ZIPCODE-VAR` | 01 | PIC X(7) | Postal Code Variable |
+
+## File-wise Variable References
+...
+```
+
+### 統合ワークフローのメリット
+
+| 項目 | 従来版 | 統合版 ✨ |
+|------|--------|---------|
+| **自然言語入力** | ✅ | ✅ |
+| **変数定義キャプチャ** | ✅ | ✅ |
+| **DIRECT 依存関係** | ❌ | ✅ |
+| **INDIRECT 依存関係** | ❌ | ✅ |
+| **CALL グラフ** | ❌ | ✅ |
+| **リスク評価** | ❌ | ✅ |
+| **推移的影響（段階的）** | ❌ | ✅ |
+
 ## ツールアーキテクチャ
 
 ### ChatCLI（従来版）- Function Calling ベース
