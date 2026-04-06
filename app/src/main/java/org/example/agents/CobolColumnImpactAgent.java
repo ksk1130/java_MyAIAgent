@@ -61,8 +61,6 @@ public class CobolColumnImpactAgent {
         private interface IntentExtractor {
             @dev.langchain4j.service.SystemMessage(
                 "You are an expert at extracting table names, column names, and directory paths from user requests.\n" +
-                "Always respond in JSON format ONLY, following the response type structure.\n" +
-                "Do not include any explanation or markdown formatting.\n" +
                 "For cobolDir and copyDir: extract only if explicitly mentioned in the request, otherwise return null."
             )
             @dev.langchain4j.service.UserMessage(
@@ -73,11 +71,11 @@ public class CobolColumnImpactAgent {
                 "- copyDir: COPY file directory (if mentioned, otherwise null)\n" +
                 "\n" +
                 "Examples:\n" +
-                "  Input: 'POST_CD の ZIPCODE を /path/to/cobol と /path/to/copy で探して'\n" +
-                "  Output: {\"tableName\": \"POST_CD\", \"columnName\": \"ZIPCODE\", \"cobolDir\": \"/path/to/cobol\", \"copyDir\": \"/path/to/copy\"}\n" +
+                "1. 'POST_CD の ZIPCODE を /path/to/cobol と /path/to/copy で探して'\n" +
+                "   → tableName: POST_CD, columnName: ZIPCODE, cobolDir: /path/to/cobol, copyDir: /path/to/copy\n" +
                 "\n" +
-                "  Input: 'ADDR_TB の ZIP_CODE を調査'\n" +
-                "  Output: {\"tableName\": \"ADDR_TB\", \"columnName\": \"ZIP_CODE\", \"cobolDir\": null, \"copyDir\": null}\n" +
+                "2. 'ADDR_TB の ZIP_CODE を調査'\n" +
+                "   → tableName: ADDR_TB, columnName: ZIP_CODE, cobolDir: null, copyDir: null\n" +
                 "\n" +
                 "User request: {{userRequest}}"
             )
@@ -450,7 +448,7 @@ public class CobolColumnImpactAgent {
         
         @Agent(
             name = "ResultSaver",
-            description = "Saves the analysis result to a JSON file",
+            description = "Saves the analysis result to a Markdown file",
             outputKey = "saveResult"
         )
         public String save(
@@ -458,96 +456,53 @@ public class CobolColumnImpactAgent {
             @V("columnName") String columnName,
             @V("analysisResult") Map<String, Object> analysisResult
         ) {
-            Object variables = analysisResult != null ? analysisResult.get("variables") : null;
-            Object fileVariables = analysisResult != null ? analysisResult.get("fileVariables") : null;
-            // 結果をJSON形式で構築
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("tableName", tableName);
-            result.put("columnName", columnName);
-            result.put("identifiedVariables", variables != null ? variables : Collections.emptyList());
-            result.put("fileVariables", fileVariables != null ? fileVariables : new HashMap<>());
-            result.put("timestamp", System.currentTimeMillis());
+            @SuppressWarnings("unchecked")
+            List<String> variables = (List<String>) (analysisResult != null ? analysisResult.get("variables") : null);
+            @SuppressWarnings("unchecked")
+            Map<String, List<String>> fileVariables = (Map<String, List<String>>) (analysisResult != null ? analysisResult.get("fileVariables") : null);
             
-            // JSON を文字列に変換
-            String jsonContent = formatAsJson(result);
+            // 結果を Markdown 形式で構築
+            StringBuilder markdown = new StringBuilder();
+            markdown.append("# COBOL Column Impact Analysis Report\n\n");
+            markdown.append("## Analysis Parameters\n\n");
+            markdown.append("- **Table Name**: `").append(tableName).append("`\n");
+            markdown.append("- **Column Name**: `").append(columnName).append("`\n");
+            markdown.append("- **Timestamp**: ").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())).append("\n\n");
+            
+            markdown.append("## Identified Variables\n\n");
+            if (variables != null && !variables.isEmpty()) {
+                for (String var : variables) {
+                    markdown.append("- `").append(var).append("`\n");
+                }
+            } else {
+                markdown.append("No variables identified.\n");
+            }
+            
+            markdown.append("\n## File-wise Variable References\n\n");
+            if (fileVariables != null && !fileVariables.isEmpty()) {
+                for (Map.Entry<String, List<String>> entry : fileVariables.entrySet()) {
+                    markdown.append("### ").append(entry.getKey()).append("\n\n");
+                    if (entry.getValue() != null && !entry.getValue().isEmpty()) {
+                        for (String var : entry.getValue()) {
+                            markdown.append("- `").append(var).append("`\n");
+                        }
+                    } else {
+                        markdown.append("No variables found.\n");
+                    }
+                    markdown.append("\n");
+                }
+            } else {
+                markdown.append("No file-wise references found.\n");
+            }
             
             // ファイルに保存
-            String outputPath = System.getProperty("user.dir") + File.separator + "cobol_impact_analysis.json";
+            String outputPath = System.getProperty("user.dir") + File.separator + "cobol_impact_analysis.md";
             try {
-                fileWriterTool.writeFile(outputPath, jsonContent);
+                fileWriterTool.writeFile(outputPath, markdown.toString());
                 return "Analysis saved to: " + outputPath;
             } catch (Exception e) {
                 return "Failed to save analysis: " + e.getMessage();
             }
-        }
-        
-        /**
-         * Map を JSON 文字列に変換
-         */
-        private String formatAsJson(Map<String, Object> data) {
-            StringBuilder json = new StringBuilder("{\n");
-            
-            for (Map.Entry<String, Object> entry : data.entrySet()) {
-                json.append("  \"").append(entry.getKey()).append("\": ");
-                
-                Object value = entry.getValue();
-                if (value instanceof String) {
-                    json.append("\"").append(value).append("\"");
-                } else if (value instanceof Number) {
-                    json.append(value);
-                } else if (value instanceof List<?>) {
-                    json.append(formatList((List<?>) value));
-                } else if (value instanceof Map<?, ?>) {
-                    json.append(formatMap((Map<?, ?>) value));
-                } else {
-                    json.append("null");
-                }
-                
-                json.append(",\n");
-            }
-            
-            // 最後のカンマを削除
-            if (json.length() > 2) {
-                json.setLength(json.length() - 2);
-                json.append("\n");
-            }
-            
-            json.append("}");
-            return json.toString();
-        }
-        
-        private String formatList(List<?> list) {
-            StringBuilder sb = new StringBuilder("[\n");
-            for (Object item : list) {
-                sb.append("    \"").append(item).append("\",\n");
-            }
-            if (sb.length() > 2) {
-                sb.setLength(sb.length() - 2);
-                sb.append("\n");
-            }
-            sb.append("  ]");
-            return sb.toString();
-        }
-        
-        private String formatMap(Map<?, ?> map) {
-            StringBuilder sb = new StringBuilder("{\n");
-            for (Map.Entry<?, ?> entry : map.entrySet()) {
-                sb.append("    \"").append(entry.getKey()).append("\": [");
-                if (entry.getValue() instanceof List<?>) {
-                    List<?> list = (List<?>) entry.getValue();
-                    for (int i = 0; i < list.size(); i++) {
-                        sb.append("\"").append(list.get(i)).append("\"");
-                        if (i < list.size() - 1) sb.append(", ");
-                    }
-                }
-                sb.append("],\n");
-            }
-            if (sb.length() > 2) {
-                sb.setLength(sb.length() - 2);
-                sb.append("\n");
-            }
-            sb.append("  }");
-            return sb.toString();
         }
     }
 
