@@ -4,12 +4,16 @@ import dev.langchain4j.agentic.Agent;
 import dev.langchain4j.agentic.AgenticServices;
 import dev.langchain4j.agentic.supervisor.SupervisorContextStrategy;
 import dev.langchain4j.agentic.supervisor.SupervisorResponseStrategy;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.service.AiServices;
-import dev.langchain4j.service.SystemMessage;
-import dev.langchain4j.service.UserMessage;
 import dev.langchain4j.service.V;
 import org.example.tools.*;
+import org.jline.reader.LineReader;
+import org.jline.reader.LineReaderBuilder;
+import org.jline.reader.impl.DefaultParser;
+import org.jline.terminal.Terminal;
+import org.jline.terminal.TerminalBuilder;
 
 import java.io.*;
 import java.util.*;
@@ -82,7 +86,7 @@ public class CobolColumnImpactAgent {
         
         private final IntentExtractor llmExtractor;
         
-        public IntentExtractorAgent(OpenAiChatModel chatModel) {
+        public IntentExtractorAgent(ChatModel chatModel) {
             this.llmExtractor = AiServices.builder(IntentExtractor.class)
                 .chatModel(chatModel)
                 .build();
@@ -90,7 +94,8 @@ public class CobolColumnImpactAgent {
         
         /**
          * LLM が返すパス文字列をクリーニング
-         * LLMが不要な文字を追加することがあるため、有効なディレクトリパスを抽出
+         * LLMが余分な文字を追加することがあるため、ドライブレター前の余分な文字を削除
+         * jLineのパーサ(escapeChars(null))により、バックスラッシュは正しく保持されている
          */
         private String cleanPath(String path) {
             if (path == null || path.isBlank()) {
@@ -101,19 +106,16 @@ public class CobolColumnImpactAgent {
             
             // Windows ドライブレター（C:\など）を含む場合、それ以降を抽出
             // 例: "AC:\\Users\\..." → "C:\\Users\\..."
-            if (path.matches("^[A-Z].*[A-Z]:\\\\.*")) {
-                int colonIdx = path.indexOf(':');
-                // 最初に見つかった : の前の文字がドライブレターかチェック
-                if (colonIdx > 0 && colonIdx < path.length() - 1) {
-                    char driveChar = path.charAt(colonIdx - 1);
-                    if (Character.isLetter(driveChar) && colonIdx > 1) {
-                        // ドライブレター前の余分な文字を削除
-                        path = path.substring(colonIdx - 1);
-                    }
+            int colonIdx = path.lastIndexOf(':');
+            if (colonIdx > 0) {
+                char driveChar = path.charAt(colonIdx - 1);
+                if (Character.isLetter(driveChar)) {
+                    // ドライブレター前の余分な文字を削除
+                    path = path.substring(colonIdx - 1);
                 }
             }
             
-            // パスの有効性をチェック（最後にセパレータがないかなど）
+            // パスの末尾にセパレータがあれば削除（最低3文字以上の場合）
             if (path.endsWith(File.separator) && path.length() > 3) {
                 path = path.substring(0, path.length() - 1);
             }
@@ -137,6 +139,9 @@ public class CobolColumnImpactAgent {
             }
             
             try {
+                // jLineのパーサ(escapeChars(null))でバックスラッシュが正しく保持されているため、
+                // ユーザーリクエストをそのままLLMに渡す
+                
                 // LLM に構造化抽出を依頼
                 ExtractedIntent intent = llmExtractor.extract(userRequest);
                 
@@ -549,7 +554,7 @@ public class CobolColumnImpactAgent {
     /**
      * SupervisorAgent の構築・実行
      */
-    public static CobolAnalysisWorkflow build(OpenAiChatModel chatModel) {
+    public static CobolAnalysisWorkflow build(ChatModel chatModel) {
         IntentExtractorAgent intentExtractor = new IntentExtractorAgent(chatModel);
         FileScannerAgent fileScanner = new FileScannerAgent();
         CobolAnalyzerAgent cobolAnalyzer = new CobolAnalyzerAgent();
@@ -573,6 +578,16 @@ public class CobolColumnImpactAgent {
     }
 
     /**
+     * Windows パスをそのまま入力できるようにした JLine パーサを返します。
+     * バックスラッシュをエスケープ文字として扱わないため、C:\hoge のような入力が崩れません。
+     *
+     * @return 設定済みのパーサ
+     */
+    private static DefaultParser buildInputParser() {
+        return new DefaultParser().escapeChars(null);
+    }
+
+    /**
      * ワークフロー実行
      * ユーザーリクエストを必須入力とし、LLM で自動抽出
      */
@@ -589,7 +604,7 @@ public class CobolColumnImpactAgent {
             // コマンドラインから入力
             userRequest = String.join(" ", args);
         } else {
-            // 対話的に入力を促す
+            // 対話的に入力を促す（jLine 3 で日本語対応）
             System.out.println("=== COBOL Column Impact Analysis System ===");
             System.out.println();
             System.out.println("テーブル名とカラム名を自然言語で指定してください。");
@@ -598,10 +613,21 @@ public class CobolColumnImpactAgent {
             System.out.println("例1: POST_CD テーブルの ZIPCODE カラムの型変更影響を調査");
             System.out.println("例2: ADDR_TB の ZIP_CODE 関連変数を探して");
             System.out.println("例3: POST_CD の ZIPCODE を /path/to/cobol から /path/to/copy で探して");
-            System.out.print("> ");
             
-            java.io.BufferedReader reader = new java.io.BufferedReader(new java.io.InputStreamReader(System.in));
-            userRequest = reader.readLine();
+            try (Terminal terminal = TerminalBuilder.builder()
+                    .system(true)
+                    .build()) {
+                LineReader reader = LineReaderBuilder.builder()
+                        .terminal(terminal)
+                        .parser(buildInputParser())
+                        .build();
+                userRequest = reader.readLine("> ");
+            } catch (IOException e) {
+                // フォールバック：基本的なBufferedReaderを使用
+                System.out.print("> ");
+                BufferedReader fallbackReader = new BufferedReader(new InputStreamReader(System.in, "UTF-8"));
+                userRequest = fallbackReader.readLine();
+            }
             
             if (userRequest == null || userRequest.isBlank()) {
                 System.out.println("エラー: ユーザーリクエストが空です。");
@@ -616,7 +642,7 @@ public class CobolColumnImpactAgent {
         System.out.println();
         
         // OpenAiChatModel を初期化
-        OpenAiChatModel chatModel = OpenAiChatModel.builder()
+        ChatModel chatModel = OpenAiChatModel.builder()
             .apiKey(apiKey)
             .modelName("gpt-4o-mini")
             .build();
@@ -643,7 +669,7 @@ public class CobolColumnImpactAgent {
     /**
      * 修正版 build メソッド：IntentExtractor をスキップして直接ファイルスキャンを開始
      */
-    private static CobolAnalysisWorkflow buildModifiedWorkflow(OpenAiChatModel chatModel, 
+    private static CobolAnalysisWorkflow buildModifiedWorkflow(ChatModel chatModel, 
                                                                 Map<String, String> extractedParams) {
         FileScannerAgent fileScanner = new FileScannerAgent();
         CobolAnalyzerAgent cobolAnalyzer = new CobolAnalyzerAgent();
