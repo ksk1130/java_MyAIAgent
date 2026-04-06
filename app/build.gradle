@@ -41,6 +41,10 @@ dependencies {
 
     // JLine3: 対話型CLIサポート（行編集・入力履歴・Ctrl+C/D対応）
     implementation libs.jline
+
+    // Apache Derby: Pure Java Database (embedded)
+    implementation libs.derby
+    implementation libs.derbytools
 }
 
 // Apply a specific Java toolchain to ease working on different environments.
@@ -58,7 +62,64 @@ application {
     applicationDefaultJvmArgs = ['-Dfile.encoding=UTF-8']
 }
 
-// ----- Distribution tasks (jlink + jpackage) copied and adapted from JFX_PasswordManager -----
+// COBOL 依存関係アナライザー実行タスク
+task runCobolAnalyzer(type: JavaExec) {
+    description = 'Run COBOL Dependency Analyzer'
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.cobol.CobolDependencyAnalyzer'
+    
+    // コマンドラインから --args で指定されたパスを使用
+    // 例: gradlew.bat app:runCobolAnalyzer --args="app/src/main/resources/cobol"
+    if (project.hasProperty('appArgs')) {
+        args project.appArgs
+    } else {
+        // デフォルトパス（app/ からの相対パス）
+        args 'src/main/resources/cobol'
+    }
+    
+    // ワーキングディレクトリをプロジェクトルートに設定
+    workingDir project.rootDir
+}
+
+// DatabaseQueryAgent テスト実行タスク
+task runDatabaseQueryTest(type: JavaExec) {
+    description = 'Test DatabaseQueryAgent with Derby DB'
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.cobol.DatabaseQueryTest'
+    
+    // ワーキングディレクトリをプロジェクトルートに設定（Derby DB へアクセス）
+    workingDir project.rootDir
+}
+
+// ハイブリッド統合デモ実行タスク
+task runHybridAnalysisDemo(type: JavaExec) {
+    description = 'Run Hybrid Analysis Demo (CobolDependencyAnalyzer + DatabaseQueryAgent)'
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.cobol.HybridAnalysisDemo'
+    
+    if (project.hasProperty('appArgs')) {
+        args project.appArgs.split()
+    }
+    
+    workingDir project.rootDir
+}
+
+// 完全統合デモ実行タスク
+task runIntegratedAnalysisDemo(type: JavaExec) {
+    description = 'Run Complete Integrated Analysis Workflow (with CobolColumnImpactAgent)'
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.cobol.IntegratedAnalysisDemo'
+    
+    if (project.hasProperty('appArgs')) {
+        args project.appArgs.split()
+    }
+    
+    workingDir project.rootDir
+}
 
 def osArch = System.getProperty('os.arch', '').toLowerCase()
 def isArm64 = osArch.contains('aarch64') || osArch.contains('arm64')

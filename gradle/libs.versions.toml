@@ -7,6 +7,7 @@ jackson = "2.21.2"
 langchain4j = "1.12.2"
 jsonschema = "1.0.79"
 jline = "3.27.1"
+derby = "10.15.2.0"
 
 [libraries]
 junit = { module = "junit:junit", version.ref = "junit" }
@@ -18,3 +19,5 @@ langchain4j-openai = { module = "dev.langchain4j:langchain4j-open-ai", version.r
 langchain4j-http-client-jdk = { module = "dev.langchain4j:langchain4j-http-client-jdk", version.ref = "langchain4j" }
 json-schema-validator = { module = "com.networknt:json-schema-validator", version.ref = "jsonschema" }
 jline = { module = "org.jline:jline", version.ref = "jline" }
+derby = { module = "org.apache.derby:derby", version.ref = "derby" }
+derbytools = { module = "org.apache.derby:derbytools", version.ref = "derby" }

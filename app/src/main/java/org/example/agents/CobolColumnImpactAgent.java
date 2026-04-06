@@ -545,8 +545,9 @@ public class CobolColumnImpactAgent {
 
     /**
      * ResultSaverAgent
-     * 非AIエージェント：FileWriterTool を使用して結果をJSONで保存
+     * 非AIエージェント：FileWriterTool を使用して結果をMarkdownで保存
      * CobolAnalyzerの戻り値（Map<String, Object>）と
+     * DatabaseQueryAgentの戻り値（dependencyInfo）と
      * IntentExtractorの戻り値から tableName と columnName を @V で取得
      */
     public static class ResultSaverAgent {
@@ -559,20 +560,33 @@ public class CobolColumnImpactAgent {
         
         @Agent(
             name = "ResultSaver",
-            description = "Saves the analysis result to a Markdown file",
+            description = "Saves the integrated analysis result (DB findings + variable definitions) to Markdown",
             outputKey = "saveResult"
         )
         public String save(
             @V("tableName") String tableName,
             @V("columnName") String columnName,
-            @V("analysisResult") Map<String, Object> analysisResult
+            @V("analysisResult") Map<String, Object> analysisResult,
+            @V("dependencyInfo") Map<String, Object> dependencyInfo
         ) {
+            // analysisResult から変数定義を取得
             @SuppressWarnings("unchecked")
             List<VariableDefinition> variables = (List<VariableDefinition>) (analysisResult != null ? analysisResult.get("variables") : null);
             @SuppressWarnings("unchecked")
             Map<String, List<VariableDefinition>> fileVariables = (Map<String, List<VariableDefinition>>) (analysisResult != null ? analysisResult.get("fileVariables") : null);
             @SuppressWarnings("unchecked")
             Map<String, List<String>> fileCopyDependencies = (Map<String, List<String>>) (analysisResult != null ? analysisResult.get("fileCopyDependencies") : null);
+            
+            // dependencyInfo から DIRECT/INDIRECT プログラムを取得
+            @SuppressWarnings("unchecked")
+            List<Map<String, String>> directPrograms = 
+                (List<Map<String, String>>) (dependencyInfo != null ? dependencyInfo.get("directPrograms") : null);
+            @SuppressWarnings("unchecked")
+            List<Map<String, String>> indirectPrograms = 
+                (List<Map<String, String>>) (dependencyInfo != null ? dependencyInfo.get("indirectPrograms") : null);
+            @SuppressWarnings("unchecked")
+            Map<String, List<String>> callGraph = 
+                (Map<String, List<String>>) (dependencyInfo != null ? dependencyInfo.get("callGraph") : null);
             
             // 結果を Markdown 形式で構築
             StringBuilder markdown = new StringBuilder();
@@ -582,7 +596,78 @@ public class CobolColumnImpactAgent {
             markdown.append("- **Column Name**: `").append(columnName).append("`\n");
             markdown.append("- **Timestamp**: ").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())).append("\n\n");
             
-            // COPY 依存関係を表示（新規セクション）
+            // ========== セクション 1: 依存関係分析（DB から） ==========
+            if (dependencyInfo != null && (Boolean) dependencyInfo.getOrDefault("success", false)) {
+                markdown.append("## Dependency Analysis (DB Query Results)\n\n");
+                
+                // DIRECT アクセス
+                markdown.append("### Direct Access Programs\n\n");
+                if (directPrograms != null && !directPrograms.isEmpty()) {
+                    markdown.append("| Program ID | File Path | Access Type |\n");
+                    markdown.append("|---|---|---|\n");
+                    for (Map<String, String> prog : directPrograms) {
+                        markdown.append("| `").append(prog.get("programId")).append("` | ");
+                        markdown.append("`").append(prog.get("filePath")).append("` | ");
+                        markdown.append(prog.get("accessType")).append(" |\n");
+                    }
+                    markdown.append("\n");
+                } else {
+                    markdown.append("No direct access programs found.\n\n");
+                }
+                
+                // INDIRECT アクセス
+                markdown.append("### Indirect Access Programs (via CALL)\n\n");
+                if (indirectPrograms != null && !indirectPrograms.isEmpty()) {
+                    markdown.append("| Program ID | File Path | Access Path | Level |\n");
+                    markdown.append("|---|---|---|---|\n");
+                    for (Map<String, String> prog : indirectPrograms) {
+                        markdown.append("| `").append(prog.get("programId")).append("` | ");
+                        markdown.append("`").append(prog.get("filePath")).append("` | ");
+                        markdown.append(prog.get("accessPath")).append(" | ");
+                        markdown.append(prog.get("level")).append(" |\n");
+                    }
+                    markdown.append("\n");
+                } else {
+                    markdown.append("No indirect access programs found.\n\n");
+                }
+                
+                // CALL 依存関係グラフ
+                markdown.append("### CALL Dependency Graph\n\n");
+                if (callGraph != null && !callGraph.isEmpty()) {
+                    markdown.append("```\n");
+                    for (Map.Entry<String, List<String>> entry : callGraph.entrySet()) {
+                        markdown.append(entry.getKey()).append(" calls: ").append(entry.getValue()).append("\n");
+                    }
+                    markdown.append("```\n\n");
+                } else {
+                    markdown.append("No CALL dependencies found.\n\n");
+                }
+                
+                // 影響プログラム数とリスク評価
+                int totalDirectPrograms = directPrograms != null ? directPrograms.size() : 0;
+                int totalIndirectPrograms = indirectPrograms != null ? indirectPrograms.size() : 0;
+                int totalPrograms = totalDirectPrograms + totalIndirectPrograms;
+                
+                markdown.append("### Impact Summary\n\n");
+                markdown.append("- **Direct Impact**: ").append(totalDirectPrograms).append(" program(s)\n");
+                markdown.append("- **Indirect Impact**: ").append(totalIndirectPrograms).append(" program(s)\n");
+                markdown.append("- **Total Impact**: ").append(totalPrograms).append(" program(s)\n\n");
+                
+                markdown.append("#### Risk Assessment\n\n");
+                String riskLevel = "Low";
+                String riskDescription = "No programs affected by schema change.";
+                if (totalPrograms > 5) {
+                    riskLevel = "High";
+                    riskDescription = totalPrograms + " programs affected. Detailed review recommended.";
+                } else if (totalPrograms > 0) {
+                    riskLevel = "Medium";
+                    riskDescription = totalPrograms + " program(s) affected.";
+                }
+                markdown.append("- **Risk Level**: **").append(riskLevel).append("**\n");
+                markdown.append("- **Description**: ").append(riskDescription).append("\n\n");
+            }
+            
+            // ========== セクション 2: COPY 依存関係 ==========
             markdown.append("## File Dependencies & Relationships\n\n");
             if (fileCopyDependencies != null && !fileCopyDependencies.isEmpty()) {
                 for (Map.Entry<String, List<String>> entry : fileCopyDependencies.entrySet()) {
@@ -598,6 +683,7 @@ public class CobolColumnImpactAgent {
                 markdown.append("No COPY dependencies found.\n\n");
             }
             
+            // ========== セクション 3: 識別された変数 ==========
             markdown.append("## Identified Variables\n\n");
             if (variables != null && !variables.isEmpty()) {
                 markdown.append("| Variable Name | Level | Data Type | Description |\n");
@@ -612,6 +698,7 @@ public class CobolColumnImpactAgent {
                 markdown.append("No variables identified.\n");
             }
             
+            // ========== セクション 4: ファイル別変数参照 ==========
             markdown.append("\n## File-wise Variable References\n\n");
             if (fileVariables != null && !fileVariables.isEmpty()) {
                 for (Map.Entry<String, List<VariableDefinition>> entry : fileVariables.entrySet()) {
@@ -635,13 +722,16 @@ public class CobolColumnImpactAgent {
                 markdown.append("No file-wise references found.\n");
             }
             
+            markdown.append("---\n");
+            markdown.append("*Generated by COBOL Column Impact Analysis Tool*\n");
+            
             // ファイルに保存
             String outputPath = System.getProperty("user.dir") + File.separator + "cobol_impact_analysis.md";
             try {
                 fileWriterTool.writeFile(outputPath, markdown.toString());
-                return "Analysis saved to: " + outputPath;
+                return "✅ Analysis saved to: " + outputPath;
             } catch (Exception e) {
-                return "Failed to save analysis: " + e.getMessage();
+                return "❌ Failed to save analysis: " + e.getMessage();
             }
         }
     }
@@ -769,6 +859,7 @@ public class CobolColumnImpactAgent {
         FileScannerAgent fileScanner = new FileScannerAgent();
         CobolAnalyzerAgent cobolAnalyzer = new CobolAnalyzerAgent();
         ResultSaverAgent resultSaver = new ResultSaverAgent();
+        DatabaseQueryAgent dbQueryAgent = new DatabaseQueryAgent();  // 新規追加
         
         // ユーザーから取得した抽出パラメータを使用
         String cobolDir = extractedParams.get("cobolDir");
@@ -778,24 +869,27 @@ public class CobolColumnImpactAgent {
         
         return AgenticServices.supervisorBuilder(CobolAnalysisWorkflow.class)
             .chatModel(chatModel)
-            .subAgents(fileScanner, cobolAnalyzer, resultSaver)
+            .subAgents(fileScanner, cobolAnalyzer, dbQueryAgent, resultSaver)  // dbQueryAgent を追加
             .responseStrategy(SupervisorResponseStrategy.SUMMARY)
             .contextGenerationStrategy(SupervisorContextStrategy.CHAT_MEMORY_AND_SUMMARIZATION)
             .supervisorContext(
-                "You are analyzing COBOL source code to understand the impact of a column type change.\n" +
+                "You are analyzing COBOL source code and dependencies to understand the impact of a column type change.\n" +
                 "=== TARGET INFORMATION ===\n" +
                 "Table Name: " + tableName + "\n" +
                 "Column Name: " + columnName + "\n" +
                 "COBOL Directory: " + cobolDir + "\n" +
                 "COPY Directory: " + copyDir + "\n" +
                 "=== TASK STEPS ===\n" +
-                "1. Use FileScanner to scan COBOL files in directory '" + cobolDir + 
+                "1. Use DatabaseQuery to search the Derby dependency database for programs accessing '" + tableName + "." + columnName + "'\n" +
+                "   - Find DIRECT access (programs directly accessing the column)\n" +
+                "   - Find INDIRECT access (programs calling other programs that access the column)\n" +
+                "2. Use FileScanner to scan COBOL files in directory '" + cobolDir + 
                 "' for references to table '" + tableName + "'\n" +
-                "2. Use CobolAnalyzer to identify variables that store column '" + columnName + 
+                "3. Use CobolAnalyzer to identify variables that store column '" + columnName + 
                 "' in the found files and COPY files (directory: '" + copyDir + "')\n" +
-                "3. Use ResultSaver to save the analysis result as JSON"
+                "4. Use ResultSaver to save the integrated analysis result (DB findings + variable definitions) as Markdown"
             )
-            .maxAgentsInvocations(10)
+            .maxAgentsInvocations(15)
             .build();
     }
 }
