@@ -1,0 +1,11 @@
+{
+  "tableName": "郵便番号",
+  "columnName": "郵便番号",
+  "identifiedVariables": [
+    "Ｗ－郵便番号"
+  ],
+  "fileVariables": {
+    "C:\Users\kskan\Desktop\java_MyAIAgent\app\src\main\resources\copy\HOST_VARS.cpy": ["Ｗ－郵便番号"]
+  },
+  "timestamp": 1775459193942
+}
