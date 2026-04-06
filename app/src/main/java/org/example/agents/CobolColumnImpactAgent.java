@@ -30,6 +30,22 @@ import java.util.*;
 public class CobolColumnImpactAgent {
 
     /**
+     * COBOL 変数定義情報を保持するレコード
+     * 変数名、データ型、長さ/形式などを統合管理
+     */
+    public record VariableDefinition(String name, String level, String picClause, String description) {
+        @Override
+        public String toString() {
+            return String.format("%-20s (Level:%s) %s%s", 
+                name, 
+                level, 
+                picClause != null ? picClause : "N/A",
+                description != null && !description.isEmpty() ? " - " + description : ""
+            );
+        }
+    }
+
+    /**
      * ワークフローインタフェース：SupervisorAgent の入出力を定義
      */
     public interface CobolAnalysisWorkflow {
@@ -296,15 +312,22 @@ public class CobolColumnImpactAgent {
             @V("copyDir") String copyDir
         ) {
             Map<String, Object> analysisResult = new HashMap<>();
-            List<String> identifiedVars = new ArrayList<>();
-            Map<String, List<String>> fileVariables = new HashMap<>();
+            List<VariableDefinition> identifiedVars = new ArrayList<>();
+            Map<String, List<VariableDefinition>> fileVariables = new HashMap<>();
+            Map<String, List<String>> fileCopyDependencies = new HashMap<>();
             
             // Step 1: 見つかったファイルから columnName を含む行を読み込む
             if (foundFiles != null && !foundFiles.isEmpty()) {
                 for (String filePath : foundFiles) {
                     try {
                         String fileContent = fileReaderTool.readFile(filePath);
-                        List<String> varsInFile = extractVariables(fileContent, columnName);
+                        List<VariableDefinition> varsInFile = extractVariables(fileContent, columnName);
+                        
+                        // COPY 句を抽出
+                        List<String> copyStatements = extractCopyStatements(fileContent);
+                        if (!copyStatements.isEmpty()) {
+                            fileCopyDependencies.put(filePath, copyStatements);
+                        }
                         
                         if (!varsInFile.isEmpty()) {
                             fileVariables.put(filePath, varsInFile);
@@ -327,7 +350,7 @@ public class CobolColumnImpactAgent {
                     for (String copyFilePath : copyFiles) {
                         try {
                             String copyFileContent = fileReaderTool.readFile(copyFilePath);
-                            List<String> copyVars = extractVariables(copyFileContent, columnName);
+                            List<VariableDefinition> copyVars = extractVariables(copyFileContent, columnName);
                             
                             if (!copyVars.isEmpty()) {
                                 if (!fileVariables.containsKey(copyFilePath)) {
@@ -344,13 +367,15 @@ public class CobolColumnImpactAgent {
                 // grep 実行失敗時もスキップ
             }
             
-            // 重複排除
-            Set<String> uniqueVars = new HashSet<>(identifiedVars);
-            identifiedVars.clear();
-            identifiedVars.addAll(uniqueVars);
+            // 重複排除（VariableDefinitionの名前で）
+            Map<String, VariableDefinition> uniqueMap = new LinkedHashMap<>();
+            for (VariableDefinition var : identifiedVars) {
+                uniqueMap.putIfAbsent(var.name(), var);
+            }
             
-            analysisResult.put("variables", identifiedVars);
+            analysisResult.put("variables", new ArrayList<>(uniqueMap.values()));
             analysisResult.put("fileVariables", fileVariables);
+            analysisResult.put("fileCopyDependencies", fileCopyDependencies);
             
             return analysisResult;
         }
@@ -400,35 +425,121 @@ public class CobolColumnImpactAgent {
         }
         
         /**
-         * COBOLコードから変数定義を抽出（簡易実装）
+         * COBOLコードから変数定義を抽出（型・長さ情報を含む）
          * パターン例：
          *   01 ZIPCODE-VAR PIC X(7)
          *   05 ZIP-CODE PIC X(7)
-         *   10 ZIPCODE VALUE '12345'
+         *   10 ZIPCODE PIC 9(5)
+         *   * このようなコメント行は抽出対象外
          */
-        private List<String> extractVariables(String cobolCode, String columnName) {
-            List<String> vars = new ArrayList<>();
+        private List<VariableDefinition> extractVariables(String cobolCode, String columnName) {
+            List<VariableDefinition> vars = new ArrayList<>();
             
             if (cobolCode == null) {
                 return vars;
             }
             
-            // 簡易パターン：列名を含むCOBOL変数定義を抽出
-            // 例：01 ZIPCODE-VAR, 05 ZIP-CODE PIC X(7)
             String[] lines = cobolCode.split("\n");
             
             for (String line : lines) {
+                // コメント行（アスタリスクで始まる）をスキップ
+                String trimmed = line.trim();
+                if (trimmed.startsWith("*") || trimmed.startsWith("EXEC SQL")) {
+                    continue;
+                }
+                
                 // 大文字小文字を区別しない検索
                 if (line.toUpperCase().contains(columnName.toUpperCase())) {
-                    // 01/05 で始まる COBOL 定義行から変数名を抽出
+                    // 01/05/10 で始まる COBOL 定義行から詳細情報を抽出
                     String[] parts = line.trim().split("\\s+");
                     if (parts.length >= 2 && parts[0].matches("^\\d{2}$")) {
-                        vars.add(parts[1]);
+                        String level = parts[0];
+                        String varName = parts[1];
+                        
+                        // PIC句の抽出（複数スペース対応）
+                        String picClause = extractPicClause(line);
+                        
+                        // コメントの抽出（アスタリスク以降）
+                        String description = extractComment(line);
+                        
+                        vars.add(new VariableDefinition(varName, level, picClause, description));
                     }
                 }
             }
             
             return vars;
+        }
+        
+        /**
+         * 行から PIC句を抽出
+         * 例：PIC X(7), PIC 9(5), PIC X(20)
+         */
+        private String extractPicClause(String line) {
+            // PIC または PICTURE キーワードを探す
+            String upperLine = line.toUpperCase();
+            int picIndex = upperLine.indexOf("PIC ");
+            if (picIndex < 0) {
+                picIndex = upperLine.indexOf("PICTURE ");
+            }
+            
+            if (picIndex >= 0) {
+                // PIC キーワード以降を抽出
+                String afterPic = line.substring(picIndex);
+                // 次のスペースまで、または行末まで抽出
+                String[] tokens = afterPic.split("\\s+");
+                if (tokens.length >= 2) {
+                    // PIC と次の要素（例：X(7)）を結合
+                    return tokens[0] + " " + tokens[1];
+                } else if (tokens.length == 1 && !tokens[0].equalsIgnoreCase("PIC")) {
+                    return tokens[0];
+                }
+            }
+            return null;
+        }
+        
+        /**
+         * 行からコメントを抽出（アスタリスク以降）
+         */
+        private String extractComment(String line) {
+            int commentIndex = line.indexOf('*');
+            if (commentIndex > 0) {
+                return line.substring(commentIndex).trim();
+            }
+            return "";
+        }
+        
+        /**
+         * COBOL ファイルから COPY 句を抽出
+         * 例：COPY "HOST_VARS.cpy", COPY HOST_VARS, etc.
+         */
+        private List<String> extractCopyStatements(String cobolCode) {
+            List<String> copyStatements = new ArrayList<>();
+            
+            if (cobolCode == null) {
+                return copyStatements;
+            }
+            
+            String[] lines = cobolCode.split("\n");
+            
+            for (String line : lines) {
+                String trimmed = line.trim().toUpperCase();
+                
+                // COPY キーワードを含む行を抽出
+                if (trimmed.startsWith("COPY ")) {
+                    // COPY 以降を抽出（クォートがあれば除去）
+                    String copyPart = line.substring(line.toUpperCase().indexOf("COPY") + 5).trim();
+                    // クォートを除去
+                    copyPart = copyPart.replaceAll("[\"']", "");
+                    // ピリオドがあれば除去
+                    copyPart = copyPart.replaceAll("\\.$", "").trim();
+                    
+                    if (!copyPart.isEmpty()) {
+                        copyStatements.add(copyPart);
+                    }
+                }
+            }
+            
+            return copyStatements;
         }
     }
 
@@ -457,9 +568,11 @@ public class CobolColumnImpactAgent {
             @V("analysisResult") Map<String, Object> analysisResult
         ) {
             @SuppressWarnings("unchecked")
-            List<String> variables = (List<String>) (analysisResult != null ? analysisResult.get("variables") : null);
+            List<VariableDefinition> variables = (List<VariableDefinition>) (analysisResult != null ? analysisResult.get("variables") : null);
             @SuppressWarnings("unchecked")
-            Map<String, List<String>> fileVariables = (Map<String, List<String>>) (analysisResult != null ? analysisResult.get("fileVariables") : null);
+            Map<String, List<VariableDefinition>> fileVariables = (Map<String, List<VariableDefinition>>) (analysisResult != null ? analysisResult.get("fileVariables") : null);
+            @SuppressWarnings("unchecked")
+            Map<String, List<String>> fileCopyDependencies = (Map<String, List<String>>) (analysisResult != null ? analysisResult.get("fileCopyDependencies") : null);
             
             // 結果を Markdown 形式で構築
             StringBuilder markdown = new StringBuilder();
@@ -469,10 +582,31 @@ public class CobolColumnImpactAgent {
             markdown.append("- **Column Name**: `").append(columnName).append("`\n");
             markdown.append("- **Timestamp**: ").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())).append("\n\n");
             
+            // COPY 依存関係を表示（新規セクション）
+            markdown.append("## File Dependencies & Relationships\n\n");
+            if (fileCopyDependencies != null && !fileCopyDependencies.isEmpty()) {
+                for (Map.Entry<String, List<String>> entry : fileCopyDependencies.entrySet()) {
+                    String cobolFile = new File(entry.getKey()).getName();
+                    markdown.append("### ").append(cobolFile).append("\n\n");
+                    markdown.append("**COPY References**:\n");
+                    for (String copyFile : entry.getValue()) {
+                        markdown.append("- `COPY \"").append(copyFile).append("\"`\n");
+                    }
+                    markdown.append("\n");
+                }
+            } else {
+                markdown.append("No COPY dependencies found.\n\n");
+            }
+            
             markdown.append("## Identified Variables\n\n");
             if (variables != null && !variables.isEmpty()) {
-                for (String var : variables) {
-                    markdown.append("- `").append(var).append("`\n");
+                markdown.append("| Variable Name | Level | Data Type | Description |\n");
+                markdown.append("|---|---|---|---|\n");
+                for (VariableDefinition var : variables) {
+                    markdown.append("| `").append(var.name()).append("` | ");
+                    markdown.append(var.level()).append(" | ");
+                    markdown.append(var.picClause() != null ? var.picClause() : "N/A").append(" | ");
+                    markdown.append(var.description() != null && !var.description().isEmpty() ? var.description() : "").append(" |\n");
                 }
             } else {
                 markdown.append("No variables identified.\n");
@@ -480,11 +614,17 @@ public class CobolColumnImpactAgent {
             
             markdown.append("\n## File-wise Variable References\n\n");
             if (fileVariables != null && !fileVariables.isEmpty()) {
-                for (Map.Entry<String, List<String>> entry : fileVariables.entrySet()) {
-                    markdown.append("### ").append(entry.getKey()).append("\n\n");
+                for (Map.Entry<String, List<VariableDefinition>> entry : fileVariables.entrySet()) {
+                    markdown.append("### ").append(new File(entry.getKey()).getName()).append("\n\n");
+                    markdown.append("**Path**: `").append(entry.getKey()).append("`\n\n");
                     if (entry.getValue() != null && !entry.getValue().isEmpty()) {
-                        for (String var : entry.getValue()) {
-                            markdown.append("- `").append(var).append("`\n");
+                        markdown.append("| Variable Name | Level | Data Type | Description |\n");
+                        markdown.append("|---|---|---|---|\n");
+                        for (VariableDefinition var : entry.getValue()) {
+                            markdown.append("| `").append(var.name()).append("` | ");
+                            markdown.append(var.level()).append(" | ");
+                            markdown.append(var.picClause() != null ? var.picClause() : "N/A").append(" | ");
+                            markdown.append(var.description() != null && !var.description().isEmpty() ? var.description() : "").append(" |\n");
                         }
                     } else {
                         markdown.append("No variables found.\n");
