@@ -61,10 +61,13 @@ public class FileReaderTool {
             String content;
             try {
                 content = decode(bytes, StandardCharsets.UTF_8);
+                System.out.println("DEBUG: File decoded with UTF-8: " + path);
             } catch (CharacterCodingException e) {
                 // fallback to Shift_JIS
+                System.out.println("DEBUG: UTF-8 decoding failed, falling back to Shift_JIS: " + path);
                 try {
                     content = decode(bytes, SHIFT_JIS);
+                    System.out.println("DEBUG: File decoded with Shift_JIS (Windows-31J): " + path);
                 } catch (CharacterCodingException ex) {
                     return "ERROR: Failed to decode file with UTF-8 and Shift_JIS: " + ex.getMessage();
                 }

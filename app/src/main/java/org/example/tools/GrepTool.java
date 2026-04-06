@@ -191,17 +191,23 @@ public class GrepTool {
 
     /**
      * UTF-8 または Shift_JIS を使ってファイルを行単位で読み込みます。
+     * UTF-8で失敗した場合はShift_JISにフォールバックします。
      *
      * @param path 読み込むファイルパス
      * @return 行一覧。読み込めない場合は null
      */
     private static List<String> readAllLinesFallback(Path path) {
         try {
-            return Files.readAllLines(path, StandardCharsets.UTF_8);
+            List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+            System.out.println("DEBUG: Grep file read with UTF-8: " + path);
+            return lines;
         } catch (IOException utf8Ex) {
             try {
-                return Files.readAllLines(path, SHIFT_JIS);
+                List<String> lines = Files.readAllLines(path, SHIFT_JIS);
+                System.out.println("DEBUG: Grep file read with Shift_JIS (Windows-31J) - fallback: " + path);
+                return lines;
             } catch (IOException sjisEx) {
+                System.out.println("DEBUG: Failed to read file with both UTF-8 and Shift_JIS: " + path);
                 return null;
             }
         }
