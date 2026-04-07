@@ -83,8 +83,8 @@ task runCobolAnalyzer(type: JavaExec) {
     if (project.hasProperty('appArgs')) {
         args project.appArgs
     } else {
-        // デフォルトパス（app/ からの相対パス）
-        args 'src/main/resources/cobol'
+        // デフォルトパス（プロジェクトルートからの相対パス）
+        args 'app/src/main/resources/cobol'
     }
     
     // ワーキングディレクトリをプロジェクトルートに設定
