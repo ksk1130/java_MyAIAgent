@@ -2,6 +2,8 @@ package org.example.tools;
 
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
 import java.nio.file.Files;
@@ -14,6 +16,7 @@ import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.util.Set;
 import java.util.Locale;
+import com.google.common.base.Strings;
 
 /**
  * ファイル読み取り用のツールクラス。
@@ -22,13 +25,15 @@ import java.util.Locale;
  * 読み込みはまず UTF-8 を試し、デコードエラーが発生した場合は Shift_JIS (Windows-31J) にフォールバックします。
  */
 public class FileReaderTool {
-
     private static final int MAX_CHARS = 20000;
 
     // 許可する拡張子（小文字で管理）
     private static final Set<String> ALLOWED_EXTS = Set.of(
-            "txt", "md", "json", "csv", "java", "py", "xml", "html", "htm", "yaml", "yml", "properties", "sql", "sh", "cob", "cpy", "cbl"
-    );
+            "txt", "md", "json", "csv", "java", "py", "xml", "html", "htm", "yaml", "yml", "properties", "sql", "sh",
+            "cob", "cpy", "cbl");
+
+    // SLF4J logger
+    private static final Logger logger = LoggerFactory.getLogger(FileReaderTool.class);
 
     // 代替エンコーディング（Windows 環境の SJIS 互換）
     private static final Charset SHIFT_JIS = Charset.forName("Windows-31J");
@@ -41,17 +46,18 @@ public class FileReaderTool {
      */
     @Tool("テキストファイルを読み込み内容を返します")
     public String readFile(@P("読み込むファイルのパス（絶対/相対）") String path) {
-        System.out.println("FileReaderツールを実行します: readFile(path=" + path + ")");
-        System.out.flush();
+        logger.info("FileReaderツールを実行します: readFile(path={})", path);
         try {
             Path p = Path.of(path).toAbsolutePath().normalize();
 
             if (!Files.exists(p)) {
+                logger.warn("File not found: {}", path);
                 return "ERROR: File not found: " + path;
             }
 
             String ext = getExtension(p);
-            if (ext == null || !ALLOWED_EXTS.contains(ext.toLowerCase(Locale.ROOT))) {
+            if (Strings.isNullOrEmpty(ext) || !ALLOWED_EXTS.contains(ext.toLowerCase(Locale.ROOT))) {
+                logger.warn("Extension not allowed: {}", ext);
                 return "ERROR: extension not allowed: " + (ext == null ? "(none)" : ext);
             }
 
@@ -61,23 +67,26 @@ public class FileReaderTool {
             String content;
             try {
                 content = decode(bytes, StandardCharsets.UTF_8);
-                System.out.println("DEBUG: File decoded with UTF-8: " + path);
+                logger.debug("File decoded with UTF-8: {}", path);
             } catch (CharacterCodingException e) {
                 // fallback to Shift_JIS
-                System.out.println("DEBUG: UTF-8 decoding failed, falling back to Shift_JIS: " + path);
+                logger.debug("UTF-8 decoding failed, falling back to Shift_JIS: {}", path);
                 try {
                     content = decode(bytes, SHIFT_JIS);
-                    System.out.println("DEBUG: File decoded with Shift_JIS (Windows-31J): " + path);
+                    logger.debug("File decoded with Shift_JIS (Windows-31J): {}", path);
                 } catch (CharacterCodingException ex) {
+                    logger.error("Failed to decode file with UTF-8 and Shift_JIS: {}", ex.getMessage());
                     return "ERROR: Failed to decode file with UTF-8 and Shift_JIS: " + ex.getMessage();
                 }
             }
 
             if (content.length() > MAX_CHARS) {
+                logger.warn("File truncated to {} chars: {}", MAX_CHARS, path);
                 return "WARNING: file truncated to " + MAX_CHARS + " chars.\n" + content.substring(0, MAX_CHARS);
             }
             return content;
         } catch (Exception e) {
+            logger.error("Failed to read file: {}", e.getMessage());
             return "ERROR: Failed to read file: " + e.getMessage();
         }
     }
@@ -85,7 +94,7 @@ public class FileReaderTool {
     /**
      * 指定文字コードでバイト列をデコードします。
      *
-     * @param bytes デコード対象のバイト列
+     * @param bytes   デコード対象のバイト列
      * @param charset 使用する文字コード
      * @return デコード結果
      * @throws CharacterCodingException デコードできない場合
@@ -106,9 +115,6 @@ public class FileReaderTool {
      * @return 拡張子。存在しない場合は null
      */
     private static String getExtension(Path p) {
-        String name = p.getFileName().toString();
-        int idx = name.lastIndexOf('.');
-        if (idx == -1 || idx == name.length() - 1) return null;
-        return name.substring(idx + 1);
+        return com.google.common.io.Files.getFileExtension(p.getFileName().toString());
     }
 }

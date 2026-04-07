@@ -1,4 +1,0 @@
-      * POST_CD TABLE DEFINITION FOR COBOL
-            EXEC SQL DECLARE
-                POST_CD TABLE ON SC_SAMPLE
-            END-EXEC.

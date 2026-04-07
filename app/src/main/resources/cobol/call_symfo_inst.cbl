@@ -1,88 +1,88 @@
-        *> call_symfo_inst.cbl
-        *> symfo_inst.cblを呼び出すプログラム
-        *> インサート用のデータを準備して渡す
-        
-          IDENTIFICATION DIVISION.
-          PROGRAM-ID.   call_symfo_inst.
-          
-          ENVIRONMENT DIVISION.
-          CONFIGURATION SECTION.
-          SPECIAL-NAMES.
-            CONSOLE IS CONS.
-          INPUT-OUTPUT SECTION.
-          FILE-CONTROL.
-          
-          DATA DIVISION.
-          FILE SECTION.
-          
-          WORKING-STORAGE SECTION.
-        * ホスト変数の定義
-              COPY "HOST_VARS.cpy".
-        
-        * ローカル作業変数
-          01  WS-RETURN-CODE         PIC 9(4) VALUE 0.
-          01  WS-RECORD-COUNT        PIC 9(9) VALUE 0.
-          01  WS-ERROR-MSG           PIC X(100) VALUE SPACES.
-          01  WS-INPUT-DATA.
-              05  WS-INPUT-ZIPCODE   PIC X(7).
-              05  WS-INPUT-ADDRESS   PIC N(50).
-          01  WS-STATUS              PIC X(10) VALUE SPACES.
-          
-          PROCEDURE DIVISION.
-          MAIN-PROCEDURE SECTION.
-        * データ準備開始
-              DISPLAY "===== symfo_instプログラム呼び出し開始 =====".
-              DISPLAY "インサート用データを準備中...".
-              
-        * サンプルデータの準備
-              PERFORM PREPARE-INSERT-DATA.
-              
-        * symfo_instプログラムの呼び出し
-              DISPLAY "symfo_instプログラムを呼び出します".
-              CALL "symfo_inst" 
-                  USING HOST-VARS
-                  RETURNING WS-RETURN-CODE
-              END-CALL.
-              
-        * 実行結果の確認
-              EVALUATE TRUE
-                  WHEN WS-RETURN-CODE = 0
-                      DISPLAY "✓ symfo_instの実行に成功しました"
-                  WHEN OTHER
-                      DISPLAY "✗ エラー: リターンコード = " 
-                          WS-RETURN-CODE
-              END-EVALUATE.
-              
-        * SQLSTATEの確認
-              IF SQLSTATE NOT = "00000"
-                  DISPLAY "SQLエラー: " SQLSTATE
-                  DISPLAY "SQLメッセージ: " SQLMSG
-                  MOVE 1 TO WS-RETURN-CODE
-              END-IF.
-              
-              DISPLAY "===== symfo_instプログラム呼び出し終了 =====".
-              
-              MOVE WS-RETURN-CODE TO PROGRAM-STATUS.
-              EXIT PROGRAM.
-          
-          PREPARE-INSERT-DATA SECTION.
-        * インサート用データの準備
-        * ここでZIPCODEとADDR-CITYに値を設定する
-              
-              DISPLAY "郵便番号の入力: ".
-              ACCEPT WS-INPUT-ZIPCODE.
-              MOVE WS-INPUT-ZIPCODE TO ZIPCODE.
-              
-              DISPLAY "住所の入力: ".
-              ACCEPT WS-INPUT-ADDRESS.
-              MOVE WS-INPUT-ADDRESS TO ADDR-CITY.
-              
-              DISPLAY "入力データ".
-              DISPLAY "  郵便番号: " ZIPCODE.
-              DISPLAY "  住所: " ADDR-CITY.
-              DISPLAY " ".
-              
-          PREPARE-INSERT-DATA-END.
-              EXIT.
-          
-          END PROGRAM call_symfo_inst.
+000001*> call_symfo_inst.cbl
+000002*> symfo_inst.cblを呼び出すプログラム
+000003*> インサート用のデータを準備して渡す
+000004
+000005 IDENTIFICATION DIVISION.
+000006 PROGRAM-ID.   call_symfo_inst.
+000007 
+000008 ENVIRONMENT DIVISION.
+000009 CONFIGURATION SECTION.
+000010 SPECIAL-NAMES.
+000011   CONSOLE IS CONS.
+000012 INPUT-OUTPUT SECTION.
+000013 FILE-CONTROL.
+000014 
+000015 DATA DIVISION.
+000016 FILE SECTION.
+000017 
+000018 WORKING-STORAGE SECTION.
+000019* ホスト変数の定義
+000020     COPY "HOST_VARS.cpy".
+000021
+000022* ローカル作業変数
+000023 01  WS-RETURN-CODE         PIC 9(4) VALUE 0.
+000024 01  WS-RECORD-COUNT        PIC 9(9) VALUE 0.
+000025 01  WS-ERROR-MSG           PIC X(100) VALUE SPACES.
+000026 01  WS-INPUT-DATA.
+000027     05  WS-INPUT-ZIPCODE   PIC X(7).
+000028     05  WS-INPUT-ADDRESS   PIC N(50).
+000029 01  WS-STATUS              PIC X(10) VALUE SPACES.
+000030 
+000031 PROCEDURE DIVISION.
+000032 MAIN-PROCEDURE SECTION.
+000033* データ準備開始
+000034     DISPLAY "===== symfo_instプログラム呼び出し開始 =====".
+000035     DISPLAY "インサート用データを準備中...".
+000036     
+000037* サンプルデータの準備
+000038     PERFORM PREPARE-INSERT-DATA.
+000039      
+000040* symfo_instプログラムの呼び出し
+000041     DISPLAY "symfo_instプログラムを呼び出します".
+000042     CALL "symfo_inst" 
+000043         USING HOST-VARS
+000044         RETURNING WS-RETURN-CODE
+000045     END-CALL.
+000046     
+000047* 実行結果の確認
+000048     EVALUATE TRUE
+000049         WHEN WS-RETURN-CODE = 0
+000050             DISPLAY "✓ symfo_instの実行に成功しました"
+000051         WHEN OTHER
+000052             DISPLAY "✗ エラー: リターンコード = " 
+000053                 WS-RETURN-CODE
+000054     END-EVALUATE.
+000055     
+000056* SQLSTATEの確認
+000057     IF SQLSTATE NOT = "00000"
+000058         DISPLAY "SQLエラー: " SQLSTATE
+000059         DISPLAY "SQLメッセージ: " SQLMSG
+000060         MOVE 1 TO WS-RETURN-CODE
+000061     END-IF.
+000062     
+000063     DISPLAY "===== symfo_instプログラム呼び出し終了 =====".
+000064     
+000065     MOVE WS-RETURN-CODE TO PROGRAM-STATUS.
+000066     EXIT PROGRAM.
+000067 
+000068 PREPARE-INSERT-DATA SECTION.
+000069* インサート用データの準備
+000070* ここでZIPCODEとADDR-CITYに値を設定する
+000071     
+000072     DISPLAY "郵便番号の入力: ".
+000073     ACCEPT WS-INPUT-ZIPCODE.
+000074     MOVE WS-INPUT-ZIPCODE TO ZIPCODE.
+000075     
+000076     DISPLAY "住所の入力: ".
+000077     ACCEPT WS-INPUT-ADDRESS.
+000078     MOVE WS-INPUT-ADDRESS TO ADDR-CITY.
+000079     
+000080     DISPLAY "入力データ".
+000081     DISPLAY "  郵便番号: " ZIPCODE.
+000082     DISPLAY "  住所: " ADDR-CITY.
+000083     DISPLAY " ".
+000084     
+000085 PREPARE-INSERT-DATA-END.
+000086     EXIT.
+000087 
+000088 END PROGRAM call_symfo_inst.

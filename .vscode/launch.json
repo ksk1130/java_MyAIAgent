@@ -12,7 +12,9 @@
             "projectName": "app",
             "args": [
                 "C:\\Users\\kskan\\Desktop\\java_MyAIAgent\\app\\src\\main\\resources\\cobol"
-            ]
+            ],
+            "vmArgs": "-Dlogback.configurationFile=${workspaceFolder}/app/src/main/resources/logback.xml",
+            "console": "integratedTerminal"
         },
         {
             "type": "java",

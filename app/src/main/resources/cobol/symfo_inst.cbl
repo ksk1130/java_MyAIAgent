@@ -1,74 +1,74 @@
-       *>symfo_inst
-       * https://symfoware.blog.fc2.com/blog-entry-31.html
-         IDENTIFICATION DIVISION.
-         PROGRAM-ID.   symfo_inst.
-         ENVIRONMENT    DIVISION.
-         CONFIGURATION  SECTION.
-        *標準的な入出力受付の宣言
-           SPECIAL-NAMES.
-             CONSOLE IS CONS.
-         INPUT-OUTPUT   SECTION.
-         FILE-CONTROL.
-        *読み込みファイルの指定
-        *perlで編集した郵便番号-住所ファイルを読み込む
-             SELECT  F1  ASSIGN  TO  "out.csv"  STATUS  FST.
-         DATA DIVISION.
-         FILE SECTION.
-        *ファイルのレコード構成
-         FD  F1.
-           01 F1R.
-             02  F1PAD1                    PIC X(1).
-             02  F1ZIPCODE                 PIC X(7).
-             02  F1PAD2                    PIC X(3).
-             02  F1ADDRESS                 PIC N(50).
-             02  F1PAD3                    PIC X(3).
-         WORKING-STORAGE SECTION.
-        *ファイルのステータス変数
-          01  FST                    PIC X(02).
-        *COPYを使用してホスト変数を読み込む
-             COPY "HOST_VARS.cpy".
-        *
-         01  COUNT1       PIC 9(1)  BINARY.
-         01  WORK         PIC X(12).
-        *
-         PROCEDURE DIVISION.
-         MAIN SECTION.
-        *COPYを使用してテーブル構成を読み込む
-             COPY "POST_CD.cpy".
-        
-        *    SAMPLEデータベース接続
-             EXEC SQL CONNECT TO 'SAMPLE' END-EXEC.
-        
-        *ファイルをオープンしてデータを取得する
-             OPEN  INPUT  F1
-             PERFORM  UNTIL  FST  NOT  =  "00"
-                 READ  F1
-                     END
-                         CONTINUE
-                     NOT END
-        *INSERT用の変数に値を移動
-                         MOVE F1ZIPCODE TO ZIPCODE
-                         MOVE F1ADDRESS TO ADDR-CITY
-        *INSERT実行
-                         PERFORM INSERT-DATA
-                 END-READ
-             END-PERFORM.
-             CLOSE  F1.
-        
-        *COMMITを実行して、データを確定させる
-             EXEC SQL COMMIT WORK END-EXEC.
-        *SAMPLEデータベースとの接続を切る
-             EXEC SQL DISCONNECT 'SAMPLE' END-EXEC.
-             MOVE  0  TO  PROGRAM-STATUS.
-             EXIT PROGRAM.
-        
-         INSERT-DATA SECTION.
-        *INSERTステートメント実行
-        *:ZIPCODE,ADDR-CITYをSQL内で実行後、変数に値が格納される
-             EXEC SQL
-               INSERT INTO POST_CD (郵便番号,住所) VALUES (:ZIPCODE,:ADDR-CITY)
-             END-EXEC.
-         INSERT-DATA-END.
-             EXIT.
-        
-         END PROGRAM symfo_inst.
+000001*>symfo_inst
+000002* https://symfoware.blog.fc2.com/blog-entry-31.html
+000003  IDENTIFICATION DIVISION.
+000004  PROGRAM-ID.   symfo_inst.
+000005  ENVIRONMENT    DIVISION.
+000006  CONFIGURATION  SECTION.
+000007*標準的な入出力受付の宣言
+000008   SPECIAL-NAMES.
+000009     CONSOLE IS CONS.
+000010 INPUT-OUTPUT   SECTION.
+000011 FILE-CONTROL.
+000012*読み込みファイルの指定
+000013*perlで編集した郵便番号-住所ファイルを読み込む
+000014     SELECT  F1  ASSIGN  TO  "out.csv"  STATUS  FST.
+000015 DATA DIVISION.
+000016 FILE SECTION.
+000017*ファイルのレコード構成
+000018 FD  F1.
+000019   01 F1R.
+000020     02  F1PAD1                    PIC X(1).
+000021     02  F1ZIPCODE                 PIC X(7).
+000022     02  F1PAD2                    PIC X(3).
+000023     02  F1ADDRESS                 PIC N(50).
+000024     02  F1PAD3                    PIC X(3).
+000025 WORKING-STORAGE SECTION.
+000026*ファイルのステータス変数
+000027  01  FST                    PIC X(02).
+000028*COPYを使用してホスト変数を読み込む
+000029     COPY "HOST_VARS.cpy".
+000030*
+000031 01  COUNT1       PIC 9(1)  BINARY.
+000032 01  WORK         PIC X(12).
+000033*
+000034 PROCEDURE DIVISION.
+000035 MAIN SECTION.
+000036*COPYを使用してテーブル構成を読み込む
+000037     COPY "POST_CD.cpy".
+000038
+000039*    SAMPLEデータベース接続
+000040     EXEC SQL CONNECT TO 'SAMPLE' END-EXEC.
+000041
+000042*ファイルをオープンしてデータを取得する
+000043     OPEN  INPUT  F1
+000044     PERFORM  UNTIL  FST  NOT  =  "00"
+000045         READ  F1
+000046             END
+000047                 CONTINUE
+000048             NOT END
+000049*INSERT用の変数に値を移動
+000050                 MOVE F1ZIPCODE TO ZIPCODE
+000051                 MOVE F1ADDRESS TO ADDR-CITY
+000052*INSERT実行
+000053                 PERFORM INSERT-DATA
+000054         END-READ
+000055     END-PERFORM.
+000056     CLOSE  F1.
+000057
+000058*COMMITを実行して、データを確定させる
+000059     EXEC SQL COMMIT WORK END-EXEC.
+000060*SAMPLEデータベースとの接続を切る
+000061     EXEC SQL DISCONNECT 'SAMPLE' END-EXEC.
+000062     MOVE  0  TO  PROGRAM-STATUS.
+000063     EXIT PROGRAM.
+000064
+000065 INSERT-DATA SECTION.
+000066*INSERTステートメント実行
+000067*:ZIPCODE,ADDR-CITYをSQL内で実行後、変数に値が格納される
+000068     EXEC SQL
+000069       INSERT INTO POST_CD (郵便番号,住所) VALUES (:ZIPCODE,:ADDR-CITY)
+000070     END-EXEC.
+000071 INSERT-DATA-END.
+000072     EXIT.
+000073
+000074 END PROGRAM symfo_inst.

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- ログ出力先ディレクトリ -->
+    <property name="LOG_DIR" value="logs" />
+
+    <!-- コンソール出力 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <charset>MS932</charset>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss} %-5level [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- パッケージ別のログレベルを調整 -->
+    <logger name="org.example" level="DEBUG" />
+
+    <!-- デフォルトのログレベル -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE" />
+    </root>
+</configuration>

@@ -15,12 +15,20 @@ repositories {
     mavenCentral()
 }
 
+// グローバルに slf4j-simple を除外して、Logback を確実に使用する
+configurations.all {
+    exclude group: 'org.slf4j', module: 'slf4j-simple'
+}
+
 dependencies {
     // Use JUnit test framework.
     testImplementation libs.junit
 
     // This dependency is used by the application.
     implementation libs.jackson.databind
+
+    // Guava: utility library (Strings, CharMatcher, Preconditions, etc.)
+    implementation group: 'com.google.guava', name: 'guava', version: '33.5.0-jre'
 
     // LangChain / Provider SDKs: always enabled
     // Include LangChain4j artifacts
@@ -36,8 +44,9 @@ dependencies {
     // Gson: JSON serialization/deserialization
     implementation 'com.google.code.gson:gson:2.10.1'
 
-    // Provide a simple SLF4J binding so LangChain4j logs are visible
-    runtimeOnly 'org.slf4j:slf4j-simple:2.0.7'
+    // SLF4J API and Logback (recommended logging implementation)
+    implementation 'org.slf4j:slf4j-api:2.0.7'
+    runtimeOnly 'ch.qos.logback:logback-classic:1.4.8'
 
     // JLine3: 対話型CLIサポート（行編集・入力履歴・Ctrl+C/D対応）
     implementation libs.jline
@@ -59,7 +68,7 @@ application {
     // App.java が ChatCLI と AgentChatCLI の両方をサポートするエントリポイント
     mainClass = 'org.example.App'
     // Ensure JVM uses UTF-8 file.encoding so console output (Japanese) doesn't mojibake on Windows
-    applicationDefaultJvmArgs = ['-Dfile.encoding=UTF-8']
+    //applicationDefaultJvmArgs = ['-Dfile.encoding=UTF-8']
 }
 
 // COBOL 依存関係アナライザー実行タスク
@@ -80,6 +89,8 @@ task runCobolAnalyzer(type: JavaExec) {
     
     // ワーキングディレクトリをプロジェクトルートに設定
     workingDir project.rootDir
+    // 明示的に logback の設定ファイルを指定して確実に読み込ませる
+    jvmArgs = ["-Dlogback.configurationFile=${projectDir}/src/main/resources/logback.xml"]
 }
 
 // DatabaseQueryAgent テスト実行タスク
