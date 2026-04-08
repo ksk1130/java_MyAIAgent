@@ -8,6 +8,7 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.V;
+import org.example.cobol.CobolDependencyAnalyzer;
 import org.example.tools.*;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -281,6 +282,53 @@ public class CobolColumnImpactAgent {
             
             files.addAll(uniqueFiles);
             return files;
+        }
+    }
+
+    /**
+     * DependencyAnalyzerAgent
+     * 非AIエージェント：CobolDependencyAnalyzer を実行して Derby 依存関係DBを再構築します。
+     * cobolDir と copyDir をそのまま利用し、DatabaseQueryAgent が参照する最新DBを準備します。
+     */
+    public static class DependencyAnalyzerAgent {
+
+        @Agent(
+            name = "DependencyAnalyzer",
+            description = "Runs CobolDependencyAnalyzer to rebuild dependency DB using the provided COBOL and COPY directories",
+            outputKey = "dependencyBuildInfo"
+        )
+        public Map<String, Object> analyze(
+            @V("cobolDir") String cobolDir,
+            @V("copyDir") String copyDir,
+            @V("columnName") String columnName
+        ) {
+            Map<String, Object> result = new HashMap<>();
+
+            if (cobolDir == null || cobolDir.isBlank()) {
+                result.put("success", false);
+                result.put("message", "COBOL directory is not specified.");
+                return result;
+            }
+
+            try {
+                CobolDependencyAnalyzer.resetDatabase();
+
+                CobolDependencyAnalyzer analyzer = new CobolDependencyAnalyzer(cobolDir, copyDir);
+                if (columnName != null && !columnName.isBlank()) {
+                    analyzer.setTargetColumn(columnName);
+                }
+                analyzer.run();
+
+                result.put("success", true);
+                result.put("message", "Dependency database rebuilt successfully.");
+                result.put("cobolDir", cobolDir);
+                result.put("copyDir", copyDir);
+            } catch (Exception e) {
+                result.put("success", false);
+                result.put("message", "Dependency analyzer failed: " + e.getMessage());
+            }
+
+            return result;
         }
     }
 
@@ -741,22 +789,26 @@ public class CobolColumnImpactAgent {
      */
     public static CobolAnalysisWorkflow build(ChatModel chatModel) {
         IntentExtractorAgent intentExtractor = new IntentExtractorAgent(chatModel);
+        DependencyAnalyzerAgent dependencyAnalyzer = new DependencyAnalyzerAgent();
         FileScannerAgent fileScanner = new FileScannerAgent();
         CobolAnalyzerAgent cobolAnalyzer = new CobolAnalyzerAgent();
+        DatabaseQueryAgent dbQueryAgent = new DatabaseQueryAgent();
         ResultSaverAgent resultSaver = new ResultSaverAgent();
         
         return AgenticServices.supervisorBuilder(CobolAnalysisWorkflow.class)
             .chatModel(chatModel)
-            .subAgents(intentExtractor, fileScanner, cobolAnalyzer, resultSaver)
+            .subAgents(intentExtractor, dependencyAnalyzer, fileScanner, cobolAnalyzer, dbQueryAgent, resultSaver)
             .responseStrategy(SupervisorResponseStrategy.SUMMARY)
             .contextGenerationStrategy(SupervisorContextStrategy.CHAT_MEMORY_AND_SUMMARIZATION)
             .supervisorContext(
                 "You are analyzing COBOL source code to understand the impact of a column type change. " +
                 "Follow these steps in order:\n" +
                 "1. Extract table name, column name, and directory from the request\n" +
-                "2. Scan COBOL files for table references\n" +
-                "3. Analyze COBOL code to identify variables that store the column\n" +
-                "4. Save the analysis result as JSON"
+                "2. Run DependencyAnalyzer to rebuild the Derby dependency database using cobolDir and copyDir\n" +
+                "3. Use DatabaseQuery to search the refreshed dependency database\n" +
+                "4. Scan COBOL files for table references\n" +
+                "5. Analyze COBOL code to identify variables that store the column\n" +
+                "6. Save the analysis result as Markdown"
             )
             .maxAgentsInvocations(10)
             .build();
@@ -856,10 +908,11 @@ public class CobolColumnImpactAgent {
      */
     private static CobolAnalysisWorkflow buildModifiedWorkflow(ChatModel chatModel, 
                                                                 Map<String, String> extractedParams) {
+        DependencyAnalyzerAgent dependencyAnalyzer = new DependencyAnalyzerAgent();
         FileScannerAgent fileScanner = new FileScannerAgent();
         CobolAnalyzerAgent cobolAnalyzer = new CobolAnalyzerAgent();
         ResultSaverAgent resultSaver = new ResultSaverAgent();
-        DatabaseQueryAgent dbQueryAgent = new DatabaseQueryAgent();  // 新規追加
+        DatabaseQueryAgent dbQueryAgent = new DatabaseQueryAgent();
         
         // ユーザーから取得した抽出パラメータを使用
         String cobolDir = extractedParams.get("cobolDir");
@@ -869,7 +922,7 @@ public class CobolColumnImpactAgent {
         
         return AgenticServices.supervisorBuilder(CobolAnalysisWorkflow.class)
             .chatModel(chatModel)
-            .subAgents(fileScanner, cobolAnalyzer, dbQueryAgent, resultSaver)  // dbQueryAgent を追加
+            .subAgents(dependencyAnalyzer, fileScanner, cobolAnalyzer, dbQueryAgent, resultSaver)
             .responseStrategy(SupervisorResponseStrategy.SUMMARY)
             .contextGenerationStrategy(SupervisorContextStrategy.CHAT_MEMORY_AND_SUMMARIZATION)
             .supervisorContext(
@@ -880,14 +933,16 @@ public class CobolColumnImpactAgent {
                 "COBOL Directory: " + cobolDir + "\n" +
                 "COPY Directory: " + copyDir + "\n" +
                 "=== TASK STEPS ===\n" +
-                "1. Use DatabaseQuery to search the Derby dependency database for programs accessing '" + tableName + "." + columnName + "'\n" +
+                "1. Use DependencyAnalyzer to rebuild the Derby dependency database with COBOL directory '" + cobolDir +
+                "' and COPY directory '" + copyDir + "'\n" +
+                "2. Use DatabaseQuery to search the refreshed Derby dependency database for programs accessing '" + tableName + "." + columnName + "'\n" +
                 "   - Find DIRECT access (programs directly accessing the column)\n" +
                 "   - Find INDIRECT access (programs calling other programs that access the column)\n" +
-                "2. Use FileScanner to scan COBOL files in directory '" + cobolDir + 
+                "3. Use FileScanner to scan COBOL files in directory '" + cobolDir + 
                 "' for references to table '" + tableName + "'\n" +
-                "3. Use CobolAnalyzer to identify variables that store column '" + columnName + 
+                "4. Use CobolAnalyzer to identify variables that store column '" + columnName + 
                 "' in the found files and COPY files (directory: '" + copyDir + "')\n" +
-                "4. Use ResultSaver to save the integrated analysis result (DB findings + variable definitions) as Markdown"
+                "5. Use ResultSaver to save the integrated analysis result (DB findings + variable definitions) as Markdown"
             )
             .maxAgentsInvocations(15)
             .build();

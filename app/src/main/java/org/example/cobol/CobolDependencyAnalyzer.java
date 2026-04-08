@@ -31,13 +31,14 @@ public class CobolDependencyAnalyzer {
     private static final String DB_URL = "jdbc:derby:cobol_dependencies;create=true";
     private static final String DEFAULT_COBOL_DIR = "app/src/main/resources/cobol";
     private static final Path DEFAULT_REPORT_PATH = Paths.get("build", "reports", "cobol-dependency-report.md");
-    private static final Pattern COPY_PATTERN = Pattern.compile("(?im)^\\s*COPY\\s+['\"]?([A-Za-z0-9_-]+)");
     private static final List<String> COPYBOOK_EXTENSIONS = List.of(".cpy", ".copy", ".cbl", ".cob");
 
     private String cobolDir;
+    private String copyDir;
     private Connection connection;
     private Map<String, String> programIdMap;
     private Map<String, Path> copybookPathMap;
+    private Set<String> loggedResolvedCopybooks;
     private static final Logger logger = LoggerFactory.getLogger(CobolDependencyAnalyzer.class);
     /**
      * 依存関係表示の対象となるカラム名（大文字）。
@@ -51,9 +52,21 @@ public class CobolDependencyAnalyzer {
      * @param cobolDir COBOL ソースファイルが格納されているディレクトリのパス
      */
     public CobolDependencyAnalyzer(String cobolDir) {
+        this(cobolDir, null);
+    }
+
+    /**
+     * 指定された COBOL ディレクトリと COPY ディレクトリで解析器を初期化します。
+     *
+     * @param cobolDir COBOL ソースファイルが格納されているディレクトリのパス
+     * @param copyDir COPY ブックが格納されているディレクトリのパス
+     */
+    public CobolDependencyAnalyzer(String cobolDir, String copyDir) {
         this.cobolDir = cobolDir != null ? cobolDir : DEFAULT_COBOL_DIR;
+        this.copyDir = Strings.isNullOrEmpty(copyDir) ? null : copyDir;
         this.programIdMap = new HashMap<>();
         this.copybookPathMap = new HashMap<>();
+        this.loggedResolvedCopybooks = new HashSet<>();
     }
 
     /**
@@ -71,6 +84,7 @@ public class CobolDependencyAnalyzer {
      */
     public static void main(String[] args) {
         String cobolPath = DEFAULT_COBOL_DIR;
+        String copyDirArg = null;
         boolean cleanDb = false;
         String targetColumnArg = null;
 
@@ -84,6 +98,8 @@ public class CobolDependencyAnalyzer {
                 // cleanDb = true;
             } else if (arg.startsWith("--column=")) {
                 targetColumnArg = arg.substring("--column=".length());
+            } else if (arg.startsWith("--copyDir=")) {
+                copyDirArg = arg.substring("--copyDir=".length());
             } else {
                 argsList.add(arg);
             }
@@ -99,7 +115,7 @@ public class CobolDependencyAnalyzer {
             cleanupDatabase();
         }
 
-        var analyzer = new CobolDependencyAnalyzer(cobolPath);
+        var analyzer = new CobolDependencyAnalyzer(cobolPath, copyDirArg);
         if (targetColumnArg != null && !targetColumnArg.isBlank()) {
             analyzer.setTargetColumn(targetColumnArg);
         }
@@ -124,6 +140,14 @@ public class CobolDependencyAnalyzer {
                 logger.warn("[Cleanup] Warning: Failed to delete database: {}", e.getMessage());
             }
         }
+    }
+
+    /**
+     * 依存関係データベースを明示的に初期化します。
+     * AIAgent など他コンポーネントから再解析前に利用します。
+     */
+    public static void resetDatabase() {
+        cleanupDatabase();
     }
 
     /**
@@ -165,6 +189,9 @@ public class CobolDependencyAnalyzer {
             }
 
             logger.info("COBOL ディレクトリ: {}", cobolDirPath.toAbsolutePath());
+            if (!Strings.isNullOrEmpty(copyDir)) {
+                logger.info("COPY ディレクトリ: {}", resolveConfiguredCopyDir().toAbsolutePath());
+            }
 
             var cobolFiles = discoverCobolFiles(cobolDirPath);
             indexCopybookFiles(cobolDirPath);
@@ -282,7 +309,8 @@ public class CobolDependencyAnalyzer {
         while (insertMatcher.find()) {
             var tableName = insertMatcher.group(1).toUpperCase();
             logger.info("  - INSERT: {}", tableName);
-            detectColumnsInInsert(programId, tableName, content, cobolFile.toString());
+            detectColumnsInInsert(programId, tableName, content, cobolFile,
+                    findLineNumber(content, insertMatcher.start()));
         }
 
         // SELECT文を正規表現で検出
@@ -292,7 +320,8 @@ public class CobolDependencyAnalyzer {
             var tableName = selectMatcher.group(1).toUpperCase();
             logger.info("  - SELECT: {}", tableName);
             // カラム名の抽出は複雑なため、ここではテーブル名のみ登録
-            registerTableAccess(programId, tableName, "ALL_COLUMNS", "SELECT", cobolFile.toString());
+            registerTableAccess(programId, tableName, "ALL_COLUMNS", "SELECT",
+                    buildSourceLocation(cobolFile, findLineNumber(content, selectMatcher.start())));
         }
 
         // UPDATE 文を正規表現で検出
@@ -302,7 +331,8 @@ public class CobolDependencyAnalyzer {
             var tableName = updateMatcher.group(1).toUpperCase();
             logger.info("  - UPDATE: {}", tableName);
             // カラム名の抽出は複雑なため、ここではテーブル名のみ登録
-            registerTableAccess(programId, tableName, "ALL_COLUMNS", "UPDATE", cobolFile.toString());
+            registerTableAccess(programId, tableName, "ALL_COLUMNS", "UPDATE",
+                    buildSourceLocation(cobolFile, findLineNumber(content, updateMatcher.start())));
         }
 
         // DELETE 文を正規表現で検出
@@ -312,7 +342,8 @@ public class CobolDependencyAnalyzer {
             var tableName = deleteMatcher.group(1).toUpperCase();
             logger.info("  - DELETE: {}", tableName);
             // カラム名の抽出は複雑なため、ここではテーブル名のみ登録
-            registerTableAccess(programId, tableName, "ALL_COLUMNS", "DELETE", cobolFile.toString());
+            registerTableAccess(programId, tableName, "ALL_COLUMNS", "DELETE",
+                    buildSourceLocation(cobolFile, findLineNumber(content, deleteMatcher.start())));
         }
     }
 
@@ -325,9 +356,10 @@ public class CobolDependencyAnalyzer {
      * @param location  ソースファイルの位置
      */
     private void detectColumnsInInsert(String programId, String tableName,
-            String content, String location) {
+            String content, Path cobolFile, int lineNumber) {
         var valuesPattern = Pattern.compile("(?i)VALUES\\s*\\(([^)]+)\\)");
         var valuesMatcher = valuesPattern.matcher(content);
+        var location = buildSourceLocation(cobolFile, lineNumber);
 
         if (valuesMatcher.find()) {
             var values = valuesMatcher.group(1);
@@ -356,7 +388,8 @@ public class CobolDependencyAnalyzer {
         while (callMatcher.find()) {
             var calledProgram = callMatcher.group(1).toLowerCase().replace('-', '_');
             logger.info("  - CALL: {}", calledProgram);
-            registerCallDependency(programId, calledProgram, cobolFile.toString());
+            registerCallDependency(programId, calledProgram,
+                    buildSourceLocation(cobolFile, findLineNumber(content, callMatcher.start())));
         }
     }
 
@@ -370,30 +403,42 @@ public class CobolDependencyAnalyzer {
     private void detectCopyDependencies(String programId, String content, Path cobolFile) {
         var dependencyInfoMap = new LinkedHashMap<String, CopyDependencyInfo>();
         var queue = new ArrayDeque<CopyTraversalNode>();
+        var visitedStates = new HashSet<String>();
 
-        for (var copybookName : extractCopybookNames(content)) {
-            logger.info("  - COPY: {}", copybookName);
-            dependencyInfoMap.putIfAbsent(copybookName, new CopyDependencyInfo(1, null, cobolFile.toString()));
-            queue.addLast(new CopyTraversalNode(copybookName, 1));
+        for (var copyStatement : extractCopyStatements(content)) {
+            logger.info("  - COPY: {}", copyStatement.copybookName());
+            dependencyInfoMap.putIfAbsent(copyStatement.copybookName(),
+                new CopyDependencyInfo(1, null, buildSourceLocation(cobolFile, copyStatement.lineNumber())));
+            queue.addLast(new CopyTraversalNode(copyStatement, 1, null,
+                buildSourceLocation(cobolFile, copyStatement.lineNumber())));
         }
 
         while (!queue.isEmpty()) {
             var current = queue.removeFirst();
-            var currentCopybookPath = findCopybookPath(current.copybookName());
-            if (currentCopybookPath == null) {
-                logger.debug("COPYブックが見つかりません: {}", current.copybookName());
+            if (!visitedStates.add(current.stateKey())) {
                 continue;
             }
 
-            var copyContent = getFileContent(currentCopybookPath);
-            for (var nestedCopybookName : extractCopybookNames(copyContent)) {
+            var currentCopybookPath = findCopybookPath(current.statement().copybookName());
+            if (currentCopybookPath == null) {
+                logger.debug("COPYブックが見つかりません: {}", current.statement().copybookName());
+                continue;
+            }
+
+                var expandedCopyLines = loadExpandedCopyLines(currentCopybookPath, current.statement().replacements());
+                for (var nestedCopyStatement : extractCopyStatementsFromLogicalLines(expandedCopyLines)) {
                 var nextDepth = current.depth() + 1;
+                var nestedCopybookName = nestedCopyStatement.copybookName();
                 var existing = dependencyInfoMap.get(nestedCopybookName);
                 if (existing == null || nextDepth < existing.depth()) {
-                    logger.info("  - COPY(depth={}): {} via {}", nextDepth, nestedCopybookName, current.copybookName());
+                    logger.info("  - COPY(depth={}): {} via {}", nextDepth, nestedCopybookName,
+                            current.statement().copybookName());
                     dependencyInfoMap.put(nestedCopybookName,
-                            new CopyDependencyInfo(nextDepth, current.copybookName(), currentCopybookPath.toString()));
-                    queue.addLast(new CopyTraversalNode(nestedCopybookName, nextDepth));
+                            new CopyDependencyInfo(nextDepth, current.statement().copybookName(),
+                            buildSourceLocation(currentCopybookPath, nestedCopyStatement.lineNumber())));
+                    queue.addLast(new CopyTraversalNode(nestedCopyStatement, nextDepth,
+                        current.statement().copybookName(),
+                        buildSourceLocation(currentCopybookPath, nestedCopyStatement.lineNumber())));
                 }
             }
         }
@@ -413,14 +458,513 @@ public class CobolDependencyAnalyzer {
      * @return 正規化済みコピーブック名の集合
      */
     private Set<String> extractCopybookNames(String content) {
-        var copyMatcher = COPY_PATTERN.matcher(content);
         var copybookNames = new HashSet<String>();
 
-        while (copyMatcher.find()) {
-            copybookNames.add(copyMatcher.group(1).toUpperCase(Locale.ROOT));
+        for (var copyStatement : extractCopyStatements(content)) {
+            copybookNames.add(copyStatement.copybookName());
         }
 
         return copybookNames;
+    }
+
+    /**
+     * COPY 句を論理行単位で抽出します。
+     * 継続行を連結し、REPLACING 句も含めて解析します。
+     *
+     * @param content COBOL ソースコードの内容
+     * @return COPY 文の一覧
+     */
+    private List<CopyStatement> extractCopyStatements(String content) {
+        return extractCopyStatementsFromLogicalLines(normalizeCopyAnalysisLines(content));
+    }
+
+    /**
+     * 論理行へ正規化済みの COBOL ソースから COPY 句を抽出します。
+     *
+     * @param logicalContent 継続行を連結済みの COBOL 内容
+     * @return COPY 文の一覧
+     */
+    private List<CopyStatement> extractCopyStatementsFromLogicalContent(String logicalContent) {
+        var logicalLines = new ArrayList<LogicalLine>();
+        var lines = logicalContent.split("\\r?\\n", -1);
+        for (var index = 0; index < lines.length; index++) {
+            logicalLines.add(new LogicalLine(index + 1, lines[index]));
+        }
+        return extractCopyStatementsFromLogicalLines(logicalLines);
+    }
+
+    /**
+     * 論理行情報から COPY 句を抽出します。
+     *
+     * @param logicalLines 論理行情報
+     * @return COPY 文の一覧
+     */
+    private List<CopyStatement> extractCopyStatementsFromLogicalLines(List<LogicalLine> logicalLines) {
+        var copyStatements = new ArrayList<CopyStatement>();
+
+        for (var index = 0; index < logicalLines.size(); index++) {
+            var logicalLine = logicalLines.get(index);
+            var trimmedLine = logicalLine.text().trim();
+            if (!trimmedLine.regionMatches(true, 0, "COPY ", 0, 5)) {
+                continue;
+            }
+
+            var statementBuilder = new StringBuilder(trimmedLine);
+            var startLineNumber = logicalLine.lineNumber();
+            while (!endsWithPeriod(statementBuilder) && index + 1 < logicalLines.size()) {
+                index++;
+                var nextLine = logicalLines.get(index).text().trim();
+                if (nextLine.isEmpty()) {
+                    continue;
+                }
+                statementBuilder.append(' ').append(nextLine);
+            }
+
+            var copyStatement = parseCopyStatement(statementBuilder.toString(), startLineNumber);
+            if (copyStatement != null) {
+                copyStatements.add(copyStatement);
+            }
+        }
+
+        return copyStatements;
+    }
+
+    /**
+     * COPY 解析向けに COBOL ソースを論理行へ正規化します。
+     * 先頭6桁除去後の 7 桁目を指示桁として扱い、継続行を連結します。
+     *
+     * @param content getFileContent で読み込んだ COBOL ソース
+     * @return 継続行を連結した論理行ベースの内容
+     */
+    private String normalizeCopyAnalysisContent(String content) {
+        return normalizeCopyAnalysisLines(content).stream()
+                .map(LogicalLine::text)
+                .collect(java.util.stream.Collectors.joining("\n"));
+    }
+
+    /**
+     * COPY 解析向けに COBOL ソースを論理行へ正規化します。
+     * 先頭6桁除去後の 7 桁目を指示桁として扱い、継続行を連結します。
+     *
+     * @param content getFileContent で読み込んだ COBOL ソース
+     * @return 継続行を連結した論理行情報
+     */
+    private List<LogicalLine> normalizeCopyAnalysisLines(String content) {
+        if (Strings.isNullOrEmpty(content)) {
+            return List.of();
+        }
+
+        var logicalLines = new ArrayList<LogicalLine>();
+        StringBuilder currentLine = null;
+        var currentLineNumber = 1;
+
+        var physicalLines = content.split("\\r?\\n", -1);
+        for (var index = 0; index < physicalLines.length; index++) {
+            var physicalLine = physicalLines[index];
+            var physicalLineNumber = index + 1;
+            if (physicalLine.isEmpty()) {
+                if (currentLine != null) {
+                    logicalLines.add(new LogicalLine(currentLineNumber, trimTrailingWhitespace(currentLine.toString())));
+                    currentLine = null;
+                }
+                continue;
+            }
+
+            var indicator = physicalLine.charAt(0);
+            var body = physicalLine.length() > 1 ? physicalLine.substring(1) : "";
+
+            if (indicator == '*' || indicator == '/') {
+                continue;
+            }
+
+            if (indicator == '-') {
+                if (currentLine == null) {
+                    currentLineNumber = physicalLineNumber;
+                    currentLine = new StringBuilder(body.stripLeading());
+                } else {
+                    if (currentLine.length() > 0 && !Character.isWhitespace(currentLine.charAt(currentLine.length() - 1))) {
+                        currentLine.append(' ');
+                    }
+                    currentLine.append(body.stripLeading());
+                }
+                continue;
+            }
+
+            if (currentLine != null) {
+                logicalLines.add(new LogicalLine(currentLineNumber, trimTrailingWhitespace(currentLine.toString())));
+            }
+            currentLineNumber = physicalLineNumber;
+            currentLine = new StringBuilder(body);
+        }
+
+        if (currentLine != null) {
+            logicalLines.add(new LogicalLine(currentLineNumber, trimTrailingWhitespace(currentLine.toString())));
+        }
+
+        return logicalLines;
+    }
+
+    /**
+     * COPY 文文字列を解析してコピーブック名と REPLACING 定義を取得します。
+     *
+     * @param statementText COPY 文全体
+     * @return 解析結果。COPY 文でない場合は null
+     */
+    private CopyStatement parseCopyStatement(String statementText, int lineNumber) {
+        var normalizedStatement = statementText.trim();
+        if (normalizedStatement.endsWith(".")) {
+            normalizedStatement = normalizedStatement.substring(0, normalizedStatement.length() - 1).trim();
+        }
+
+        var tokens = tokenizeCobolStatement(normalizedStatement);
+        if (tokens.size() < 2 || !tokens.get(0).equalsIgnoreCase("COPY")) {
+            return null;
+        }
+
+        var copybookName = stripEnclosingQuotes(tokens.get(1)).toUpperCase(Locale.ROOT);
+        var replacements = new ArrayList<CopyReplacement>();
+
+        for (var index = 2; index < tokens.size();) {
+            if (!tokens.get(index).equalsIgnoreCase("REPLACING")) {
+                index++;
+                continue;
+            }
+
+            index++;
+            while (index + 2 < tokens.size()) {
+                var sourceToken = tokens.get(index++);
+                if (!tokens.get(index).equalsIgnoreCase("BY")) {
+                    break;
+                }
+                index++;
+                var targetToken = tokens.get(index++);
+                var replacement = createCopyReplacement(sourceToken, targetToken);
+                if (replacement != null) {
+                    replacements.add(replacement);
+                }
+            }
+        }
+
+        return new CopyStatement(copybookName, replacements, lineNumber);
+    }
+
+    /**
+     * COBOL 文をトークン分割します。
+     * 擬似テキスト (==...==) と引用符囲みを1トークンとして扱います。
+     *
+     * @param statementText 解析対象文
+     * @return トークン列
+     */
+    private List<String> tokenizeCobolStatement(String statementText) {
+        var tokens = new ArrayList<String>();
+
+        for (var index = 0; index < statementText.length();) {
+            var currentChar = statementText.charAt(index);
+            if (Character.isWhitespace(currentChar)) {
+                index++;
+                continue;
+            }
+
+            if (currentChar == '=' && index + 1 < statementText.length() && statementText.charAt(index + 1) == '=') {
+                var end = statementText.indexOf("==", index + 2);
+                if (end >= 0) {
+                    tokens.add(statementText.substring(index, end + 2));
+                    index = end + 2;
+                    continue;
+                }
+            }
+
+            if (currentChar == '\'' || currentChar == '"') {
+                var end = statementText.indexOf(currentChar, index + 1);
+                if (end >= 0) {
+                    tokens.add(statementText.substring(index, end + 1));
+                    index = end + 1;
+                    continue;
+                }
+            }
+
+            var next = index + 1;
+            while (next < statementText.length() && !Character.isWhitespace(statementText.charAt(next))) {
+                next++;
+            }
+            tokens.add(statementText.substring(index, next));
+            index = next;
+        }
+
+        return tokens;
+    }
+
+    /**
+     * COPY REPLACING の置換定義を生成します。
+     *
+     * @param sourceToken 置換元トークン
+     * @param targetToken 置換先トークン
+     * @return 置換定義。解析不可の場合は null
+     */
+    private CopyReplacement createCopyReplacement(String sourceToken, String targetToken) {
+        var normalizedSource = normalizeReplacementToken(sourceToken);
+        var normalizedTarget = normalizeReplacementToken(targetToken);
+        if (normalizedSource.isEmpty()) {
+            return null;
+        }
+
+        var wholeWord = isIdentifierReplacementToken(sourceToken);
+        return new CopyReplacement(normalizedSource, normalizedTarget, wholeWord);
+    }
+
+    /**
+     * REPLACING の置換定義を適用した COPY ブック内容を返します。
+     *
+     * @param copybookPath COPY ブックパス
+     * @param replacements REPLACING 定義
+     * @return 置換適用後の論理行ベース内容
+     */
+    private String loadExpandedCopyContent(Path copybookPath, List<CopyReplacement> replacements) {
+        return loadExpandedCopyLines(copybookPath, replacements).stream()
+                .map(LogicalLine::text)
+                .collect(java.util.stream.Collectors.joining("\n"));
+    }
+
+    /**
+     * REPLACING の置換定義を適用した COPY ブックの論理行情報を返します。
+     *
+     * @param copybookPath COPY ブックパス
+     * @param replacements REPLACING 定義
+     * @return 置換適用後の論理行情報
+     */
+    private List<LogicalLine> loadExpandedCopyLines(Path copybookPath, List<CopyReplacement> replacements) {
+        var lines = normalizeCopyAnalysisLines(getFileContent(copybookPath));
+        if (replacements.isEmpty()) {
+            return lines;
+        }
+
+        var expandedLines = new ArrayList<LogicalLine>(lines.size());
+        for (var line : lines) {
+            var expandedText = line.text();
+            for (var replacement : replacements) {
+                expandedText = replacement.apply(expandedText);
+            }
+            expandedLines.add(new LogicalLine(line.lineNumber(), expandedText));
+        }
+        return expandedLines;
+    }
+
+    /**
+     * COPY 文を仮想展開した結果として対象カラムが現れるか判定します。
+     *
+     * @param copyStatement 判定対象 COPY 文
+     * @param normalizedTarget 大文字化済みの対象カラム名
+     * @param visiting 再帰ループ防止用の訪問集合
+     * @return 対象カラムが現れる場合 true
+     */
+    private boolean copyStatementContainsTarget(CopyStatement copyStatement, String normalizedTarget,
+            Set<String> visiting) {
+        var copybookPath = findCopybookPath(copyStatement.copybookName());
+        if (copybookPath == null) {
+            return false;
+        }
+
+        var stateKey = buildCopyStateKey(copyStatement);
+        if (!visiting.add(stateKey)) {
+            return false;
+        }
+
+        try {
+            var expandedContent = loadExpandedCopyContent(copybookPath, copyStatement.replacements());
+            if (containsTargetColumn(expandedContent, normalizedTarget)) {
+                return true;
+            }
+
+            for (var nestedCopyStatement : extractCopyStatementsFromLogicalLines(
+                    loadExpandedCopyLines(copybookPath, copyStatement.replacements()))) {
+                if (copyStatementContainsTarget(nestedCopyStatement, normalizedTarget, visiting)) {
+                    return true;
+                }
+            }
+
+            return false;
+        } finally {
+            visiting.remove(stateKey);
+        }
+    }
+
+    /**
+     * 指定プログラムが COPY 経由で対象カラムへ依存する情報を収集します。
+     *
+     * @param cobolFile プログラムファイル
+     * @return COPY 依存情報の一覧
+     */
+    private List<CopyColumnDependency> collectCopyTargetDependencies(Path cobolFile) {
+        var matches = new LinkedHashMap<String, CopyColumnDependency>();
+        var queue = new ArrayDeque<CopyTraversalNode>();
+        var visitedStates = new HashSet<String>();
+        var normalizedTarget = targetColumn.toUpperCase(Locale.ROOT);
+
+        for (var copyStatement : extractCopyStatements(getFileContent(cobolFile))) {
+            queue.addLast(new CopyTraversalNode(copyStatement, 1, null,
+                    buildSourceLocation(cobolFile, copyStatement.lineNumber())));
+        }
+
+        while (!queue.isEmpty()) {
+            var current = queue.removeFirst();
+            if (!visitedStates.add(current.stateKey())) {
+                continue;
+            }
+
+            var currentCopybookPath = findCopybookPath(current.statement().copybookName());
+            if (currentCopybookPath == null) {
+                continue;
+            }
+
+            if (copyStatementContainsTarget(current.statement(), normalizedTarget, new HashSet<>())) {
+                var dependency = new CopyColumnDependency(current.statement().copybookName(), current.depth(),
+                        current.viaCopybook(), current.location());
+                matches.putIfAbsent(dependency.uniqueKey(), dependency);
+            }
+
+            for (var nestedCopyStatement : extractCopyStatementsFromLogicalLines(
+                    loadExpandedCopyLines(currentCopybookPath, current.statement().replacements()))) {
+                queue.addLast(new CopyTraversalNode(nestedCopyStatement, current.depth() + 1,
+                        current.statement().copybookName(),
+                        buildSourceLocation(currentCopybookPath, nestedCopyStatement.lineNumber())));
+            }
+        }
+
+        return new ArrayList<>(matches.values());
+    }
+
+    /**
+     * 文字列末尾の空白を除去します。
+     *
+     * @param value 対象文字列
+     * @return 末尾空白除去後の文字列
+     */
+    private String trimTrailingWhitespace(String value) {
+        var end = value.length();
+        while (end > 0 && Character.isWhitespace(value.charAt(end - 1))) {
+            end--;
+        }
+        return value.substring(0, end);
+    }
+
+    /**
+     * COPY 文がピリオドで終端しているか判定します。
+     *
+     * @param statementBuilder 判定対象
+     * @return 終端済みの場合 true
+     */
+    private boolean endsWithPeriod(StringBuilder statementBuilder) {
+        return statementBuilder.toString().trim().endsWith(".");
+    }
+
+    /**
+     * REPLACING トークンの囲み記号を除去します。
+     *
+     * @param token 元トークン
+     * @return 正規化後トークン
+     */
+    private String normalizeReplacementToken(String token) {
+        var normalizedToken = stripEnclosingQuotes(token).trim();
+        if (normalizedToken.startsWith("==") && normalizedToken.endsWith("==") && normalizedToken.length() >= 4) {
+            return normalizedToken.substring(2, normalizedToken.length() - 2);
+        }
+        return normalizedToken;
+    }
+
+    /**
+     * 置換トークンが識別子単位の置換か判定します。
+     *
+     * @param token 判定対象トークン
+     * @return 識別子置換の場合 true
+     */
+    private boolean isIdentifierReplacementToken(String token) {
+        var normalizedToken = normalizeReplacementToken(token);
+        return normalizedToken.matches("[A-Za-z0-9_-]+");
+    }
+
+    /**
+     * 先頭末尾の単一引用符または二重引用符を除去します。
+     *
+     * @param token 対象トークン
+     * @return 引用符除去後文字列
+     */
+    private String stripEnclosingQuotes(String token) {
+        if (token.length() >= 2) {
+            var firstChar = token.charAt(0);
+            var lastChar = token.charAt(token.length() - 1);
+            if ((firstChar == '\'' && lastChar == '\'') || (firstChar == '"' && lastChar == '"')) {
+                return token.substring(1, token.length() - 1);
+            }
+        }
+        return token;
+    }
+
+    /**
+     * 対象カラム文字列を含むか判定します。
+     *
+     * @param content 判定対象内容
+     * @param normalizedTarget 大文字化済み対象カラム
+     * @return 含む場合 true
+     */
+    private boolean containsTargetColumn(String content, String normalizedTarget) {
+        return !Strings.isNullOrEmpty(content) && content.toUpperCase(Locale.ROOT).contains(normalizedTarget);
+    }
+
+    /**
+     * 文字オフセットから 1 始まりの行番号を返します。
+     *
+     * @param content 対象文字列
+     * @param offset 文字オフセット
+     * @return 行番号
+     */
+    private int findLineNumber(String content, int offset) {
+        var boundedOffset = Math.max(0, Math.min(offset, content.length()));
+        var lineNumber = 1;
+        for (var index = 0; index < boundedOffset; index++) {
+            if (content.charAt(index) == '\n') {
+                lineNumber++;
+            }
+        }
+        return lineNumber;
+    }
+
+    /**
+     * ファイルパスと行番号から位置文字列を生成します。
+     *
+     * @param filePath ファイルパス
+     * @param lineNumber 行番号
+     * @return 位置文字列
+     */
+    private String buildSourceLocation(Path filePath, int lineNumber) {
+        return filePath + "#L" + Math.max(1, lineNumber);
+    }
+
+    /**
+     * 主キーに埋め込むための location キーを生成します。
+     *
+     * @param location 位置文字列
+     * @return コンパクトな location キー
+     */
+    private String buildLocationKey(String location) {
+        var normalizedLocation = location.replace('\\', '/');
+        var hash = Integer.toHexString(normalizedLocation.toLowerCase(Locale.ROOT).hashCode());
+        var lineMarkerIndex = normalizedLocation.lastIndexOf("#L");
+        var lineSuffix = lineMarkerIndex >= 0 ? normalizedLocation.substring(lineMarkerIndex + 1) : "LOC";
+        return lineSuffix + "_" + hash;
+    }
+
+    /**
+     * COPY 状態の一意キーを返します。
+     *
+     * @param copyStatement COPY 文
+     * @return 一意キー
+     */
+    private String buildCopyStateKey(CopyStatement copyStatement) {
+        var builder = new StringBuilder(copyStatement.copybookName());
+        for (var replacement : copyStatement.replacements()) {
+            builder.append('|').append(replacement.signature());
+        }
+        return builder.toString();
     }
 
     /**
@@ -430,10 +974,16 @@ public class CobolDependencyAnalyzer {
      */
     private void indexCopybookFiles(Path cobolDirPath) {
         copybookPathMap.clear();
+        loggedResolvedCopybooks.clear();
 
         var searchRoots = new ArrayList<Path>();
         var normalizedCobolDir = cobolDirPath.toAbsolutePath().normalize();
         var parent = normalizedCobolDir.getParent();
+
+        var configuredCopyDir = resolveConfiguredCopyDir();
+        if (configuredCopyDir != null) {
+            searchRoots.add(configuredCopyDir);
+        }
 
         if (parent != null) {
             searchRoots.add(parent.resolve("copy"));
@@ -459,13 +1009,35 @@ public class CobolDependencyAnalyzer {
     }
 
     /**
+     * 設定済みの COPY ディレクトリを絶対パスへ解決します。
+     *
+     * @return COPY ディレクトリ。未設定の場合は null
+     */
+    private Path resolveConfiguredCopyDir() {
+        if (Strings.isNullOrEmpty(copyDir)) {
+            return null;
+        }
+
+        var copyDirPath = Paths.get(copyDir);
+        if (!copyDirPath.isAbsolute()) {
+            copyDirPath = Paths.get(System.getProperty("user.dir")).resolve(copyDirPath);
+        }
+        return copyDirPath.toAbsolutePath().normalize();
+    }
+
+    /**
      * 指定名の COPY ブックファイルを取得します。
      *
      * @param copybookName コピーブック名
      * @return ファイルパス。見つからない場合は null
      */
     private Path findCopybookPath(String copybookName) {
-        return copybookPathMap.get(copybookName.toUpperCase(Locale.ROOT));
+        var normalizedCopybookName = copybookName.toUpperCase(Locale.ROOT);
+        var resolvedPath = copybookPathMap.get(normalizedCopybookName);
+        if (resolvedPath != null && loggedResolvedCopybooks.add(normalizedCopybookName)) {
+            logger.info("COPYブック解決: {} -> {}", normalizedCopybookName, resolvedPath.toAbsolutePath());
+        }
+        return resolvedPath;
     }
 
     /**
@@ -542,7 +1114,8 @@ public class CobolDependencyAnalyzer {
             // 既存レコードは無視
         }
 
-        var accessId = programId + ":" + columnId + ":" + accessType.toLowerCase();
+        var accessId = programId + ":" + columnId + ":" + accessType.toLowerCase() + ":"
+            + buildLocationKey(location);
         var accessSql = """
                 INSERT INTO cobol_table_access (access_id, program_id, column_id, access_type, sql_location) VALUES (?, ?, ?, ?, ?)
                     """;
@@ -572,7 +1145,7 @@ public class CobolDependencyAnalyzer {
                     """;
 
         try (var stmt = connection.prepareStatement(sql)) {
-            var depId = callerProgramId + "_calls_" + calleeProgramId;
+            var depId = callerProgramId + "_calls_" + calleeProgramId + "_" + buildLocationKey(location);
             stmt.setString(1, depId);
             stmt.setString(2, callerProgramId);
             stmt.setString(3, calleeProgramId);
@@ -597,7 +1170,7 @@ public class CobolDependencyAnalyzer {
                     """;
 
         try (var stmt = connection.prepareStatement(sql)) {
-            var depId = programId + "_copies_" + copybookName + "_" + depth;
+            var depId = programId + "_copies_" + copybookName + "_" + depth + "_" + buildLocationKey(location);
             stmt.setString(1, depId);
             stmt.setString(2, programId);
             stmt.setString(3, copybookName);
@@ -637,17 +1210,19 @@ public class CobolDependencyAnalyzer {
 
         var rows = new ArrayList<DependencyGraphRow>();
 
-        var sql = """
-                    SELECT program_name, file_path, dependency_type
+         var sql = """
+                  SELECT program_name, file_path, dependency_type, location
                 FROM (
-                  SELECT DISTINCT p.program_name, p.file_path, 'DIRECT' AS dependency_type
+                SELECT DISTINCT p.program_name, p.file_path, 'DIRECT' AS dependency_type,
+                    cta.sql_location AS location
                   FROM cobol_table_access cta
                   JOIN cobol_programs p ON cta.program_id = p.program_id
                   JOIN table_columns tc ON cta.column_id = tc.column_id
                   WHERE tc.column_name = ?
                   UNION ALL
                   SELECT DISTINCT p1.program_name, p1.file_path,
-                         'INDIRECT (via ' || p2.program_name || ')' AS dependency_type
+                    'INDIRECT (via ' || p2.program_name || ')' AS dependency_type,
+                    ccd.call_location AS location
                   FROM cobol_call_dependency ccd
                   JOIN cobol_programs p1 ON ccd.caller_program_id = p1.program_id
                   JOIN cobol_programs p2 ON ccd.callee_program_id = p2.program_id
@@ -667,7 +1242,8 @@ public class CobolDependencyAnalyzer {
                     rows.add(new DependencyGraphRow(
                             rs.getString("program_name"),
                             rs.getString("file_path"),
-                            rs.getString("dependency_type")));
+                            rs.getString("dependency_type"),
+                            rs.getString("location")));
                 }
             }
         } catch (Exception e) {
@@ -689,9 +1265,9 @@ public class CobolDependencyAnalyzer {
         }
 
         return sectionTitle + "\n\n" + toMarkdownTable(
-                List.of("プログラム名", "ファイルパス", "依存タイプ"),
+            List.of("プログラム名", "ファイルパス", "依存タイプ", "出現箇所"),
                 rows.stream()
-                        .map(row -> List.of(row.programName(), row.filePath(), row.dependencyType()))
+                .map(row -> List.of(row.programName(), row.filePath(), row.dependencyType(), row.location()))
                         .toList());
     }
 
@@ -701,42 +1277,34 @@ public class CobolDependencyAnalyzer {
      * @param rows 依存関係一覧
      */
     private void addCopyMediatedDependencies(List<DependencyGraphRow> rows) {
-        var matchingCopybooks = findCopybooksContainingTargetColumn();
-        if (matchingCopybooks.isEmpty()) {
-            return;
-        }
-
         var existingKeys = new HashSet<String>();
         for (var row : rows) {
             existingKeys.add(row.programName() + "|" + row.dependencyType());
         }
 
         var sql = """
-                SELECT p.program_name, p.file_path, ccd.copybook_name, ccd.copy_depth, ccd.via_copybook
-                  FROM cobol_copy_dependency ccd
-                  JOIN cobol_programs p ON ccd.program_id = p.program_id
-                ORDER BY p.program_name, ccd.copy_depth, ccd.copybook_name
+                SELECT program_name, file_path
+                  FROM cobol_programs
+                ORDER BY program_name
                 """;
 
         try (var stmt = connection.createStatement();
                 var rs = stmt.executeQuery(sql)) {
             while (rs.next()) {
-                var copybookName = rs.getString("copybook_name");
-                if (!matchingCopybooks.contains(copybookName)) {
-                    continue;
-                }
-
-                var depth = rs.getInt("copy_depth");
-                var viaCopybook = rs.getString("via_copybook");
-                var dependencyType = depth <= 1
-                        ? "COPY DIRECT (" + copybookName + ")"
-                        : "COPY INDIRECT (via " + viaCopybook + ", " + copybookName + ")";
-                var key = rs.getString("program_name") + "|" + dependencyType;
-                if (existingKeys.add(key)) {
-                    rows.add(new DependencyGraphRow(
-                            rs.getString("program_name"),
-                            rs.getString("file_path"),
-                            dependencyType));
+                var filePath = Paths.get(rs.getString("file_path"));
+                for (var dependency : collectCopyTargetDependencies(filePath)) {
+                    var dependencyType = dependency.depth() <= 1
+                            ? "COPY DIRECT (" + dependency.copybookName() + ")"
+                            : "COPY INDIRECT (via " + dependency.viaCopybook() + ", "
+                                    + dependency.copybookName() + ")";
+                    var key = rs.getString("program_name") + "|" + dependencyType;
+                    if (existingKeys.add(key)) {
+                        rows.add(new DependencyGraphRow(
+                                rs.getString("program_name"),
+                                rs.getString("file_path"),
+                                dependencyType,
+                                dependency.location()));
+                    }
                 }
             }
         } catch (Exception e) {
@@ -754,8 +1322,9 @@ public class CobolDependencyAnalyzer {
         var normalizedTarget = targetColumn.toUpperCase(Locale.ROOT);
 
         for (var entry : copybookPathMap.entrySet()) {
-            var content = getFileContent(entry.getValue());
-            if (!Strings.isNullOrEmpty(content) && content.toUpperCase(Locale.ROOT).contains(normalizedTarget)) {
+            var content = loadExpandedCopyContent(entry.getValue(), List.of());
+            if (copyStatementContainsTarget(new CopyStatement(entry.getKey(), List.of(), 1), normalizedTarget,
+                    new HashSet<>()) || containsTargetColumn(content, normalizedTarget)) {
                 matchingCopybooks.add(entry.getKey());
             }
         }
@@ -773,7 +1342,8 @@ public class CobolDependencyAnalyzer {
                        'CALL' AS dependency_kind,
                        ccd.callee_program_id AS dependency_target,
                        CAST(NULL AS INTEGER) AS dependency_depth,
-                       CAST(NULL AS VARCHAR(100)) AS via_target
+                      CAST(NULL AS VARCHAR(100)) AS via_target,
+                      ccd.call_location AS dependency_location
                   FROM cobol_call_dependency ccd
                   JOIN cobol_programs p ON ccd.caller_program_id = p.program_id
                 UNION ALL
@@ -782,7 +1352,8 @@ public class CobolDependencyAnalyzer {
                        'COPY' AS dependency_kind,
                        ccd.copybook_name AS dependency_target,
                        ccd.copy_depth AS dependency_depth,
-                       ccd.via_copybook AS via_target
+                      ccd.via_copybook AS via_target,
+                      ccd.copy_location AS dependency_location
                   FROM cobol_copy_dependency ccd
                   JOIN cobol_programs p ON ccd.program_id = p.program_id
                 ORDER BY program_name, dependency_kind, dependency_target
@@ -804,7 +1375,8 @@ public class CobolDependencyAnalyzer {
                         rs.getString("file_path"),
                         dependencyKind,
                         dependencyTarget,
-                        dependencyType));
+                        dependencyType,
+                        rs.getString("dependency_location")));
             }
         } catch (Exception e) {
             logger.error("CALL / COPY 依存関係表示エラー: {}", e.getMessage());
@@ -816,14 +1388,15 @@ public class CobolDependencyAnalyzer {
         }
 
         return "## CALL / COPY 依存関係\n\n" + toMarkdownTable(
-                List.of("プログラム名", "ファイルパス", "依存種別", "参照先", "依存タイプ"),
+            List.of("プログラム名", "ファイルパス", "依存種別", "参照先", "依存タイプ", "出現箇所"),
                 rows.stream()
                         .map(row -> List.of(
                                 row.programName(),
                                 row.filePath(),
                                 row.dependencyKind(),
                                 row.dependencyTarget(),
-                                row.dependencyType()))
+                    row.dependencyType(),
+                    row.location()))
                         .toList());
     }
 
@@ -1027,7 +1600,7 @@ public class CobolDependencyAnalyzer {
         try (var stmt = connection.createStatement()) {
             var createCobolTableAccess = """
                     CREATE TABLE cobol_table_access (
-                        access_id VARCHAR(300) PRIMARY KEY,
+                        access_id VARCHAR(600) PRIMARY KEY,
                         program_id VARCHAR(100) NOT NULL,
                         column_id VARCHAR(200) NOT NULL,
                         access_type VARCHAR(20),
@@ -1046,7 +1619,7 @@ public class CobolDependencyAnalyzer {
         try (var stmt = connection.createStatement()) {
             var createCobolCallDependency = """
                     CREATE TABLE cobol_call_dependency (
-                        dep_id VARCHAR(200) PRIMARY KEY,
+                        dep_id VARCHAR(400) PRIMARY KEY,
                         caller_program_id VARCHAR(100) NOT NULL,
                         callee_program_id VARCHAR(100) NOT NULL,
                         call_location VARCHAR(500),
@@ -1065,7 +1638,7 @@ public class CobolDependencyAnalyzer {
         try (var stmt = connection.createStatement()) {
             var createCobolCopyDependency = """
                     CREATE TABLE cobol_copy_dependency (
-                        dep_id VARCHAR(200) PRIMARY KEY,
+                        dep_id VARCHAR(400) PRIMARY KEY,
                         program_id VARCHAR(100) NOT NULL,
                         copybook_name VARCHAR(100) NOT NULL,
                         copy_location VARCHAR(500),
@@ -1136,7 +1709,71 @@ public class CobolDependencyAnalyzer {
      * @param copybookName 対象コピーブック名
      * @param depth 元プログラムからの深さ
      */
-    private record CopyTraversalNode(String copybookName, int depth) {
+    private record CopyTraversalNode(CopyStatement statement, int depth, String viaCopybook, String location) {
+        /**
+         * キュー要素の再訪問防止キーを返します。
+         *
+         * @return 一意キー
+         */
+        private String stateKey() {
+            var builder = new StringBuilder(statement.copybookName());
+            for (var replacement : statement.replacements()) {
+                builder.append('|').append(replacement.signature());
+            }
+            builder.append('|').append(depth);
+            builder.append('|').append(viaCopybook == null ? "" : viaCopybook);
+            return builder.toString();
+        }
+    }
+
+    /**
+     * COPY 文の解析結果です。
+     *
+     * @param copybookName コピーブック名
+     * @param replacements REPLACING 定義一覧
+     */
+    private record CopyStatement(String copybookName, List<CopyReplacement> replacements, int lineNumber) {
+    }
+
+    /**
+     * COPY 解析用の論理行情報です。
+     *
+     * @param lineNumber 元ファイル上の開始行番号
+     * @param text 論理行テキスト
+     */
+    private record LogicalLine(int lineNumber, String text) {
+    }
+
+    /**
+     * COPY REPLACING の置換定義です。
+     *
+     * @param sourceText 置換元文字列
+     * @param targetText 置換先文字列
+     * @param wholeWord 識別子単位での置換かどうか
+     */
+    private record CopyReplacement(String sourceText, String targetText, boolean wholeWord) {
+        /**
+         * 文字列へ置換を適用します。
+         *
+         * @param content 対象文字列
+         * @return 置換後文字列
+         */
+        private String apply(String content) {
+            var pattern = wholeWord
+                    ? Pattern.compile("(?i)(?<![A-Za-z0-9_-])" + Pattern.quote(sourceText)
+                            + "(?![A-Za-z0-9_-])")
+                    : Pattern.compile("(?i)" + Pattern.quote(sourceText));
+            return pattern.matcher(content).replaceAll(java.util.regex.Matcher.quoteReplacement(targetText));
+        }
+
+        /**
+         * 置換定義の署名を返します。
+         *
+         * @return 署名文字列
+         */
+        private String signature() {
+            return sourceText + "->" + targetText + ":" + wholeWord;
+        }
     }
 
     /**
@@ -1150,13 +1787,32 @@ public class CobolDependencyAnalyzer {
     }
 
     /**
+     * 対象カラムへ到達する COPY 依存関係の情報です。
+     *
+     * @param copybookName コピーブック名
+     * @param depth 依存の深さ
+     * @param viaCopybook 経由元コピーブック
+     */
+    private record CopyColumnDependency(String copybookName, int depth, String viaCopybook, String location) {
+        /**
+         * 依存関係の一意キーを返します。
+         *
+         * @return 一意キー
+         */
+        private String uniqueKey() {
+            return copybookName + "|" + depth + "|" + (viaCopybook == null ? "" : viaCopybook)
+                    + "|" + location;
+        }
+    }
+
+    /**
      * 依存関係グラフ表示用の1行分データです。
      *
      * @param programName プログラム名
      * @param filePath ファイルパス
      * @param dependencyType 依存タイプ表示文字列
      */
-    private record DependencyGraphRow(String programName, String filePath, String dependencyType) {
+    private record DependencyGraphRow(String programName, String filePath, String dependencyType, String location) {
     }
 
     /**
@@ -1169,6 +1825,6 @@ public class CobolDependencyAnalyzer {
      * @param dependencyType 依存タイプ表示文字列
      */
     private record ProgramDependencyRow(String programName, String filePath, String dependencyKind,
-            String dependencyTarget, String dependencyType) {
+            String dependencyTarget, String dependencyType, String location) {
     }
 }
