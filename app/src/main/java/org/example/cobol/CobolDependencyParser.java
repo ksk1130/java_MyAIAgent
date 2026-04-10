@@ -10,10 +10,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
-import org.example.tools.FileReaderTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.google.common.base.Strings;
 
 /**
  * CALL/COPY/SQL依存の抽出・解析を担当するクラス。
@@ -21,11 +19,15 @@ import com.google.common.base.Strings;
 public class CobolDependencyParser {
     private final Connection connection;
     private final Map<String, Path> copybookPathMap;
+    private final CobolColumnAnalysisUtil columnAnalysisUtil;
+    private final CobolCopyAnalysisUtil copyAnalysisUtil;
     private static final Logger logger = LoggerFactory.getLogger(CobolDependencyParser.class);
 
     public CobolDependencyParser(Connection connection, Map<String, Path> copybookPathMap) {
         this.connection = connection;
         this.copybookPathMap = copybookPathMap;
+        this.columnAnalysisUtil = new CobolColumnAnalysisUtil();
+        this.copyAnalysisUtil = new CobolCopyAnalysisUtil();
     }
 
     /**
@@ -33,7 +35,7 @@ public class CobolDependencyParser {
      */
     public void analyzeDependencies(Path cobolFile) throws IOException {
         logger.info("[解析] {}", cobolFile.getFileName());
-        var content = getFileContent(cobolFile);
+        var content = readNormalizedContent(cobolFile);
         var programId = extractProgramId(content);
         if (programId == null) {
             System.out.println("  警告: プログラムID が見つかりません");
@@ -189,31 +191,34 @@ public class CobolDependencyParser {
     // ヘルパーメソッドは省略（Analyzer本体から逐次移動）
 
     private List<CopyStatement> extractCopyStatements(String content) {
-        return extractCopyStatementsFromLogicalLines(normalizeCopyAnalysisLines(content));
+        return copyAnalysisUtil.extractCopyStatements(content);
     }
 
     private List<CopyStatement> extractCopyStatementsFromLogicalLines(List<LogicalLine> logicalLines) {
-        // 実装は後述
-        return new ArrayList<>();
+        return copyAnalysisUtil.extractCopyStatementsFromLogicalLines(logicalLines);
     }
 
     private List<LogicalLine> normalizeCopyAnalysisLines(String content) {
-        // 実装は後述
-        return new ArrayList<>();
+        return copyAnalysisUtil.normalizeCopyAnalysisLines(content);
     }
 
     private Path findCopybookPath(String copybookName) {
-        return copybookPathMap.get(copybookName);
+        return copyAnalysisUtil.findCopybookPath(copybookPathMap, copybookName);
     }
 
     private List<LogicalLine> loadExpandedCopyLines(Path copybookPath, List<CopyReplacement> replacements) {
-        // 実装は後述
-        return new ArrayList<>();
+        try {
+            return copyAnalysisUtil.loadExpandedCopyLines(copybookPath, replacements);
+        } catch (IOException e) {
+            logger.debug("COPYブック読み込みエラー: {}", e.getMessage());
+            return new ArrayList<>();
+        }
     }
 
     private void registerTableAccess(String programId, String tableName, String column, String accessType, String location) {
         var columnId = tableName + ":" + column;
         var accessId = programId + ":" + columnId + ":" + accessType;
+        ensureTableColumnExists(columnId, tableName, column);
         var sql = """
             INSERT INTO cobol_table_access (access_id, program_id, column_id, access_type, sql_location)
             VALUES (?, ?, ?, ?, ?)
@@ -227,6 +232,21 @@ public class CobolDependencyParser {
             pstmt.execute();
         } catch (Exception e) {
             logger.debug("テーブルアクセス登録: {}", e.getMessage());
+        }
+    }
+
+    private void ensureTableColumnExists(String columnId, String tableName, String columnName) {
+        var sql = """
+            INSERT INTO table_columns (column_id, table_name, column_name)
+            VALUES (?, ?, ?)
+        """;
+        try (var pstmt = connection.prepareStatement(sql)) {
+            pstmt.setString(1, columnId);
+            pstmt.setString(2, tableName);
+            pstmt.setString(3, columnName);
+            pstmt.execute();
+        } catch (Exception e) {
+            logger.debug("テーブルカラム登録: {}", e.getMessage());
         }
     }
 
@@ -280,25 +300,7 @@ public class CobolDependencyParser {
         return file.toString() + ":" + lineNumber;
     }
 
-    private static String getFileContent(Path p) {
-        var fr = new FileReaderTool();
-        var raw = fr.readFile(p.toString());
-        if (Strings.isNullOrEmpty(raw)) {
-            return "";
-        }
-        var sb = new StringBuilder(raw.length());
-        var lines = raw.split("\\r?\\n", -1);
-        for (var i = 0; i < lines.length; i++) {
-            var line = lines[i];
-            if (line.length() > 6) {
-                sb.append(line.substring(6));
-            } else {
-                sb.append("");
-            }
-            if (i < lines.length - 1) {
-                sb.append('\n');
-            }
-        }
-        return sb.toString();
+    private String readNormalizedContent(Path path) {
+        return columnAnalysisUtil.readNormalizedFile(path);
     }
 }

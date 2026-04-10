@@ -6,10 +6,8 @@ import java.sql.Connection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
-import org.example.tools.FileReaderTool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import com.google.common.base.Strings;
 
 /**
  * プログラム登録・管理を担当するクラス。
@@ -17,18 +15,20 @@ import com.google.common.base.Strings;
 public class CobolProgramRegistrar {
     private final Connection connection;
     private final Map<String, String> programIdMap;
+    private final CobolColumnAnalysisUtil columnAnalysisUtil;
     private static final Logger logger = LoggerFactory.getLogger(CobolProgramRegistrar.class);
 
     public CobolProgramRegistrar(Connection connection) {
         this.connection = connection;
         this.programIdMap = new HashMap<>();
+        this.columnAnalysisUtil = new CobolColumnAnalysisUtil();
     }
 
     /**
      * プログラム自体の存在をデータベースに登録します（フェーズ1）。
      */
     public void registerProgramOnly(Path cobolFile) throws IOException {
-        var content = getFileContent(cobolFile);
+        var content = columnAnalysisUtil.readNormalizedFile(cobolFile);
         var programId = extractProgramId(content);
         if (programId == null) {
             return;
@@ -63,33 +63,6 @@ public class CobolProgramRegistrar {
             logger.error("プログラム登録エラー: {}", e.getMessage());
         }
     }
-
-    /**
-     * 指定されたファイルパスからファイル内容を読み取ります。
-     */
-    private static String getFileContent(Path p) {
-        var fr = new FileReaderTool();
-        var raw = fr.readFile(p.toString());
-        if (Strings.isNullOrEmpty(raw)) {
-            return "";
-        }
-        // 各行先頭6文字を取り除く正規化
-        var sb = new StringBuilder(raw.length());
-        var lines = raw.split("\\r?\\n", -1);
-        for (var i = 0; i < lines.length; i++) {
-            var line = lines[i];
-            if (line.length() > 6) {
-                sb.append(line.substring(6));
-            } else {
-                sb.append("");
-            }
-            if (i < lines.length - 1) {
-                sb.append('\n');
-            }
-        }
-        return sb.toString();
-    }
-
     public Map<String, String> getProgramIdMap() {
         return programIdMap;
     }

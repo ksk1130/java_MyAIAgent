@@ -9,6 +9,7 @@ import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.V;
 import org.example.cobol.CobolDependencyAnalyzer;
+import org.example.cobol.CobolColumnAnalysisUtil;
 import org.example.tools.*;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;
@@ -29,22 +30,6 @@ import java.util.*;
  * 各エージェントの戻り値は自動的にコンテキストに格納され、次のエージェントに渡されます。
  */
 public class CobolColumnImpactAgent {
-
-    /**
-     * COBOL 変数定義情報を保持するレコード
-     * 変数名、データ型、長さ/形式などを統合管理
-     */
-    public record VariableDefinition(String name, String level, String picClause, String description) {
-        @Override
-        public String toString() {
-            return String.format("%-20s (Level:%s) %s%s", 
-                name, 
-                level, 
-                picClause != null ? picClause : "N/A",
-                description != null && !description.isEmpty() ? " - " + description : ""
-            );
-        }
-    }
 
     /**
      * ワークフローインタフェース：SupervisorAgent の入出力を定義
@@ -323,6 +308,7 @@ public class CobolColumnImpactAgent {
                 result.put("message", "Dependency database rebuilt successfully.");
                 result.put("cobolDir", cobolDir);
                 result.put("copyDir", copyDir);
+                result.put("targetColumnSummary", analyzer.getTargetColumnSummary());
             } catch (Exception e) {
                 result.put("success", false);
                 result.put("message", "Dependency analyzer failed: " + e.getMessage());
@@ -341,10 +327,12 @@ public class CobolColumnImpactAgent {
         
         private final FileReaderTool fileReaderTool;
         private final GrepTool grepTool;
+        private final CobolColumnAnalysisUtil columnAnalysisUtil;
         
         public CobolAnalyzerAgent() {
             this.fileReaderTool = new FileReaderTool();
             this.grepTool = new GrepTool();
+            this.columnAnalysisUtil = new CobolColumnAnalysisUtil();
         }
         
         @Agent(
@@ -355,13 +343,13 @@ public class CobolColumnImpactAgent {
         public Map<String, Object> analyze(
             @V("foundFiles") List<String> foundFiles,
             @V("columnName") String columnName,
-            @V("tableName") String tableName,
             @V("cobolDir") String cobolDir,
             @V("copyDir") String copyDir
         ) {
             Map<String, Object> analysisResult = new HashMap<>();
-            List<VariableDefinition> identifiedVars = new ArrayList<>();
-            Map<String, List<VariableDefinition>> fileVariables = new HashMap<>();
+            List<CobolColumnAnalysisUtil.VariableDefinition> identifiedVars = new ArrayList<>();
+            Map<String, List<CobolColumnAnalysisUtil.VariableDefinition>> fileVariables = new HashMap<>();
+            Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> fileAssignments = new HashMap<>();
             Map<String, List<String>> fileCopyDependencies = new HashMap<>();
             
             // Step 1: 見つかったファイルから columnName を含む行を読み込む
@@ -369,17 +357,20 @@ public class CobolColumnImpactAgent {
                 for (String filePath : foundFiles) {
                     try {
                         String fileContent = fileReaderTool.readFile(filePath);
-                        List<VariableDefinition> varsInFile = extractVariables(fileContent, columnName);
+                        CobolColumnAnalysisUtil.ColumnAnalysis columnAnalysis = columnAnalysisUtil.analyzeContent(fileContent, columnName);
                         
                         // COPY 句を抽出
-                        List<String> copyStatements = extractCopyStatements(fileContent);
+                        List<String> copyStatements = columnAnalysisUtil.extractCopyStatements(fileContent);
                         if (!copyStatements.isEmpty()) {
                             fileCopyDependencies.put(filePath, copyStatements);
                         }
                         
-                        if (!varsInFile.isEmpty()) {
-                            fileVariables.put(filePath, varsInFile);
-                            identifiedVars.addAll(varsInFile);
+                        if (!columnAnalysis.variables().isEmpty()) {
+                            fileVariables.put(filePath, columnAnalysis.variables());
+                            identifiedVars.addAll(columnAnalysis.variables());
+                        }
+                        if (!columnAnalysis.assignments().isEmpty()) {
+                            fileAssignments.put(filePath, columnAnalysis.assignments());
                         }
                     } catch (Exception e) {
                         // ファイル読み込み失敗時はスキップ
@@ -397,14 +388,21 @@ public class CobolColumnImpactAgent {
                     
                     for (String copyFilePath : copyFiles) {
                         try {
-                            String copyFileContent = fileReaderTool.readFile(copyFilePath);
-                            List<VariableDefinition> copyVars = extractVariables(copyFileContent, columnName);
+                            CobolColumnAnalysisUtil.ColumnAnalysis columnAnalysis =
+                                columnAnalysisUtil.analyzeContent(fileReaderTool.readFile(copyFilePath), columnName);
                             
-                            if (!copyVars.isEmpty()) {
+                            if (!columnAnalysis.variables().isEmpty()) {
                                 if (!fileVariables.containsKey(copyFilePath)) {
-                                    fileVariables.put(copyFilePath, copyVars);
+                                    fileVariables.put(copyFilePath, columnAnalysis.variables());
                                 }
-                                identifiedVars.addAll(copyVars);
+                                identifiedVars.addAll(columnAnalysis.variables());
+                            }
+                            if (!columnAnalysis.assignments().isEmpty()) {
+                                fileAssignments.merge(copyFilePath, columnAnalysis.assignments(), (existing, incoming) -> {
+                                    List<CobolColumnAnalysisUtil.AssignmentOccurrence> merged = new ArrayList<>(existing);
+                                    merged.addAll(incoming);
+                                    return deduplicateAssignments(merged);
+                                });
                             }
                         } catch (Exception e) {
                             // COPY ファイル読み込み失敗時もスキップ
@@ -416,18 +414,54 @@ public class CobolColumnImpactAgent {
             }
             
             // 重複排除（VariableDefinitionの名前で）
-            Map<String, VariableDefinition> uniqueMap = new LinkedHashMap<>();
-            for (VariableDefinition var : identifiedVars) {
+            Map<String, CobolColumnAnalysisUtil.VariableDefinition> uniqueMap = new LinkedHashMap<>();
+            for (CobolColumnAnalysisUtil.VariableDefinition var : identifiedVars) {
                 uniqueMap.putIfAbsent(var.name(), var);
             }
             
             analysisResult.put("variables", new ArrayList<>(uniqueMap.values()));
             analysisResult.put("fileVariables", fileVariables);
+            analysisResult.put("fileAssignments", normalizeAssignmentMap(fileAssignments));
             analysisResult.put("fileCopyDependencies", fileCopyDependencies);
             
             return analysisResult;
         }
-        
+
+        /**
+         * ファイル別の代入一覧を重複排除して返します。
+         *
+         * @param fileAssignments ファイル別代入一覧
+         * @return 正規化後のファイル別代入一覧
+         */
+        private Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> normalizeAssignmentMap(
+            Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> fileAssignments) {
+            Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> normalized = new HashMap<>();
+            for (Map.Entry<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> entry : fileAssignments.entrySet()) {
+                List<CobolColumnAnalysisUtil.AssignmentOccurrence> deduplicated = deduplicateAssignments(entry.getValue());
+                if (!deduplicated.isEmpty()) {
+                    normalized.put(entry.getKey(), deduplicated);
+                }
+            }
+            return normalized;
+        }
+
+        /**
+         * 同一変数・同一行番号・同一代入種別・同一行内容の重複を取り除きます。
+         *
+         * @param assignments 代入一覧
+         * @return 重複排除後の一覧
+         */
+        private List<CobolColumnAnalysisUtil.AssignmentOccurrence> deduplicateAssignments(
+            List<CobolColumnAnalysisUtil.AssignmentOccurrence> assignments) {
+            Map<String, CobolColumnAnalysisUtil.AssignmentOccurrence> uniqueAssignments = new LinkedHashMap<>();
+            for (CobolColumnAnalysisUtil.AssignmentOccurrence assignment : assignments) {
+                String key = assignment.variableName() + "@" + assignment.lineNumber() + "@"
+                    + assignment.statementType() + "@" + assignment.sourceLine();
+                uniqueAssignments.putIfAbsent(key, assignment);
+            }
+            return new ArrayList<>(uniqueAssignments.values());
+        }
+
         /**
          * Grep 結果をファイルパスのリストに変換
          * 形式："C:\path\file.cbl:line:content" → ["C:\path\file.cbl", ...]
@@ -471,124 +505,6 @@ public class CobolColumnImpactAgent {
             files.addAll(uniqueFiles);
             return files;
         }
-        
-        /**
-         * COBOLコードから変数定義を抽出（型・長さ情報を含む）
-         * パターン例：
-         *   01 ZIPCODE-VAR PIC X(7)
-         *   05 ZIP-CODE PIC X(7)
-         *   10 ZIPCODE PIC 9(5)
-         *   * このようなコメント行は抽出対象外
-         */
-        private List<VariableDefinition> extractVariables(String cobolCode, String columnName) {
-            List<VariableDefinition> vars = new ArrayList<>();
-            
-            if (cobolCode == null) {
-                return vars;
-            }
-            
-            String[] lines = cobolCode.split("\n");
-            
-            for (String line : lines) {
-                // コメント行（アスタリスクで始まる）をスキップ
-                String trimmed = line.trim();
-                if (trimmed.startsWith("*") || trimmed.startsWith("EXEC SQL")) {
-                    continue;
-                }
-                
-                // 大文字小文字を区別しない検索
-                if (line.toUpperCase().contains(columnName.toUpperCase())) {
-                    // 01/05/10 で始まる COBOL 定義行から詳細情報を抽出
-                    String[] parts = line.trim().split("\\s+");
-                    if (parts.length >= 2 && parts[0].matches("^\\d{2}$")) {
-                        String level = parts[0];
-                        String varName = parts[1];
-                        
-                        // PIC句の抽出（複数スペース対応）
-                        String picClause = extractPicClause(line);
-                        
-                        // コメントの抽出（アスタリスク以降）
-                        String description = extractComment(line);
-                        
-                        vars.add(new VariableDefinition(varName, level, picClause, description));
-                    }
-                }
-            }
-            
-            return vars;
-        }
-        
-        /**
-         * 行から PIC句を抽出
-         * 例：PIC X(7), PIC 9(5), PIC X(20)
-         */
-        private String extractPicClause(String line) {
-            // PIC または PICTURE キーワードを探す
-            String upperLine = line.toUpperCase();
-            int picIndex = upperLine.indexOf("PIC ");
-            if (picIndex < 0) {
-                picIndex = upperLine.indexOf("PICTURE ");
-            }
-            
-            if (picIndex >= 0) {
-                // PIC キーワード以降を抽出
-                String afterPic = line.substring(picIndex);
-                // 次のスペースまで、または行末まで抽出
-                String[] tokens = afterPic.split("\\s+");
-                if (tokens.length >= 2) {
-                    // PIC と次の要素（例：X(7)）を結合
-                    return tokens[0] + " " + tokens[1];
-                } else if (tokens.length == 1 && !tokens[0].equalsIgnoreCase("PIC")) {
-                    return tokens[0];
-                }
-            }
-            return null;
-        }
-        
-        /**
-         * 行からコメントを抽出（アスタリスク以降）
-         */
-        private String extractComment(String line) {
-            int commentIndex = line.indexOf('*');
-            if (commentIndex > 0) {
-                return line.substring(commentIndex).trim();
-            }
-            return "";
-        }
-        
-        /**
-         * COBOL ファイルから COPY 句を抽出
-         * 例：COPY "HOST_VARS.cpy", COPY HOST_VARS, etc.
-         */
-        private List<String> extractCopyStatements(String cobolCode) {
-            List<String> copyStatements = new ArrayList<>();
-            
-            if (cobolCode == null) {
-                return copyStatements;
-            }
-            
-            String[] lines = cobolCode.split("\n");
-            
-            for (String line : lines) {
-                String trimmed = line.trim().toUpperCase();
-                
-                // COPY キーワードを含む行を抽出
-                if (trimmed.startsWith("COPY ")) {
-                    // COPY 以降を抽出（クォートがあれば除去）
-                    String copyPart = line.substring(line.toUpperCase().indexOf("COPY") + 5).trim();
-                    // クォートを除去
-                    copyPart = copyPart.replaceAll("[\"']", "");
-                    // ピリオドがあれば除去
-                    copyPart = copyPart.replaceAll("\\.$", "").trim();
-                    
-                    if (!copyPart.isEmpty()) {
-                        copyStatements.add(copyPart);
-                    }
-                }
-            }
-            
-            return copyStatements;
-        }
     }
 
     /**
@@ -601,9 +517,11 @@ public class CobolColumnImpactAgent {
     public static class ResultSaverAgent {
         
         private final FileWriterTool fileWriterTool;
+        private final DatabaseQueryAgent dbQueryAgent;
         
         public ResultSaverAgent() {
             this.fileWriterTool = new FileWriterTool();
+            this.dbQueryAgent = new DatabaseQueryAgent();
         }
         
         @Agent(
@@ -614,16 +532,12 @@ public class CobolColumnImpactAgent {
         public String save(
             @V("tableName") String tableName,
             @V("columnName") String columnName,
-            @V("analysisResult") Map<String, Object> analysisResult,
-            @V("dependencyInfo") Map<String, Object> dependencyInfo
+            @V("dependencyInfo") Map<String, Object> dependencyInfo,
+            @V("dependencyBuildInfo") Map<String, Object> dependencyBuildInfo
         ) {
-            // analysisResult から変数定義を取得
-            @SuppressWarnings("unchecked")
-            List<VariableDefinition> variables = (List<VariableDefinition>) (analysisResult != null ? analysisResult.get("variables") : null);
-            @SuppressWarnings("unchecked")
-            Map<String, List<VariableDefinition>> fileVariables = (Map<String, List<VariableDefinition>>) (analysisResult != null ? analysisResult.get("fileVariables") : null);
-            @SuppressWarnings("unchecked")
-            Map<String, List<String>> fileCopyDependencies = (Map<String, List<String>>) (analysisResult != null ? analysisResult.get("fileCopyDependencies") : null);
+            // DB から変数定義と代入文を取得（ローカル解析は不要）
+            List<Map<String, String>> variableDefinitions = dbQueryAgent.queryVariableDefinitions(columnName);
+            List<Map<String, String>> variableAssignments = dbQueryAgent.queryVariableAssignments(columnName);
             
             // dependencyInfo から DIRECT/INDIRECT プログラムを取得
             @SuppressWarnings("unchecked")
@@ -643,6 +557,16 @@ public class CobolColumnImpactAgent {
             markdown.append("- **Table Name**: `").append(tableName).append("`\n");
             markdown.append("- **Column Name**: `").append(columnName).append("`\n");
             markdown.append("- **Timestamp**: ").append(new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date())).append("\n\n");
+            
+            // ========== セクション 0: 詳細グラフ情報（DependencyAnalyzer生成） ==========
+            String detailedGraphContent = readDetailedGraphReport();
+            if (detailedGraphContent != null && !detailedGraphContent.isEmpty()) {
+                markdown.append("## Detailed Dependency Graph\n\n");
+                markdown.append(detailedGraphContent).append("\n\n");
+                
+                // 詳細グラフレポートから出現箇所（代入文）を抽出
+                extractAndAddAssignmentsFromGraph(markdown, detailedGraphContent);
+            }
             
             // ========== セクション 1: 依存関係分析（DB から） ==========
             if (dependencyInfo != null && (Boolean) dependencyInfo.getOrDefault("success", false)) {
@@ -717,57 +641,49 @@ public class CobolColumnImpactAgent {
             
             // ========== セクション 2: COPY 依存関係 ==========
             markdown.append("## File Dependencies & Relationships\n\n");
-            if (fileCopyDependencies != null && !fileCopyDependencies.isEmpty()) {
-                for (Map.Entry<String, List<String>> entry : fileCopyDependencies.entrySet()) {
-                    String cobolFile = new File(entry.getKey()).getName();
-                    markdown.append("### ").append(cobolFile).append("\n\n");
-                    markdown.append("**COPY References**:\n");
-                    for (String copyFile : entry.getValue()) {
-                        markdown.append("- `COPY \"").append(copyFile).append("\"`\n");
-                    }
-                    markdown.append("\n");
-                }
-            } else {
-                markdown.append("No COPY dependencies found.\n\n");
-            }
+            markdown.append("(COPY dependencies are tracked via the dependency graph above)\n\n");
             
             // ========== セクション 3: 識別された変数 ==========
             markdown.append("## Identified Variables\n\n");
-            if (variables != null && !variables.isEmpty()) {
-                markdown.append("| Variable Name | Level | Data Type | Description |\n");
-                markdown.append("|---|---|---|---|\n");
-                for (VariableDefinition var : variables) {
-                    markdown.append("| `").append(var.name()).append("` | ");
-                    markdown.append(var.level()).append(" | ");
-                    markdown.append(var.picClause() != null ? var.picClause() : "N/A").append(" | ");
-                    markdown.append(var.description() != null && !var.description().isEmpty() ? var.description() : "").append(" |\n");
+            if (variableDefinitions != null && !variableDefinitions.isEmpty()) {
+                markdown.append("| Variable Name | File | Level | Data Type | Description |\n");
+                markdown.append("|---|---|---|---|---|\n");
+                for (Map<String, String> varDef : variableDefinitions) {
+                    markdown.append("| `").append(varDef.get("variableName")).append("` | ");
+                    markdown.append("`").append(new File(varDef.get("filePath")).getName()).append("` | ");
+                    markdown.append(varDef.get("level") != null ? varDef.get("level") : "N/A").append(" | ");
+                    markdown.append(varDef.get("picClause") != null ? varDef.get("picClause") : "N/A").append(" | ");
+                    markdown.append(varDef.get("description") != null && !varDef.get("description").isEmpty() ? varDef.get("description") : "").append(" |\n");
                 }
             } else {
                 markdown.append("No variables identified.\n");
             }
-            
-            // ========== セクション 4: ファイル別変数参照 ==========
-            markdown.append("\n## File-wise Variable References\n\n");
-            if (fileVariables != null && !fileVariables.isEmpty()) {
-                for (Map.Entry<String, List<VariableDefinition>> entry : fileVariables.entrySet()) {
+
+            // ========== セクション 4: 代入文 ===========
+            markdown.append("\n## Assignment Statements\n\n");
+            if (variableAssignments != null && !variableAssignments.isEmpty()) {
+                // ファイルごとにグループ化
+                Map<String, List<Map<String, String>>> assignmentsByFile = new LinkedHashMap<>();
+                for (Map<String, String> assignment : variableAssignments) {
+                    String filePath = assignment.get("filePath");
+                    assignmentsByFile.computeIfAbsent(filePath, k -> new ArrayList<>()).add(assignment);
+                }
+                
+                for (Map.Entry<String, List<Map<String, String>>> entry : assignmentsByFile.entrySet()) {
                     markdown.append("### ").append(new File(entry.getKey()).getName()).append("\n\n");
                     markdown.append("**Path**: `").append(entry.getKey()).append("`\n\n");
-                    if (entry.getValue() != null && !entry.getValue().isEmpty()) {
-                        markdown.append("| Variable Name | Level | Data Type | Description |\n");
-                        markdown.append("|---|---|---|---|\n");
-                        for (VariableDefinition var : entry.getValue()) {
-                            markdown.append("| `").append(var.name()).append("` | ");
-                            markdown.append(var.level()).append(" | ");
-                            markdown.append(var.picClause() != null ? var.picClause() : "N/A").append(" | ");
-                            markdown.append(var.description() != null && !var.description().isEmpty() ? var.description() : "").append(" |\n");
-                        }
-                    } else {
-                        markdown.append("No variables found.\n");
+                    markdown.append("| Variable Name | Line | Statement Type | Source |\n");
+                    markdown.append("|---|---|---|---|\n");
+                    for (Map<String, String> assignment : entry.getValue()) {
+                        markdown.append("| `").append(assignment.get("variableName")).append("` | ");
+                        markdown.append(assignment.get("lineNumber")).append(" | ");
+                        markdown.append(assignment.get("statementType")).append(" | ");
+                        markdown.append(escapeMarkdown(assignment.get("sourceLine"))).append(" |\n");
                     }
                     markdown.append("\n");
                 }
             } else {
-                markdown.append("No file-wise references found.\n");
+                markdown.append("No assignment statements identified.\n");
             }
             
             markdown.append("---\n");
@@ -780,6 +696,104 @@ public class CobolColumnImpactAgent {
                 return "✅ Analysis saved to: " + outputPath;
             } catch (Exception e) {
                 return "❌ Failed to save analysis: " + e.getMessage();
+            }
+        }
+
+        /**
+         * Markdown テーブル用にセル文字列をエスケープします。
+         *
+         * @param value 元の文字列
+         * @return エスケープ済み文字列
+         */
+        private String escapeMarkdown(String value) {
+            if (value == null) {
+                return "";
+            }
+            return value.replace("|", "\\|").replace("\n", "<br>");
+        }
+        
+        /**
+         * DependencyAnalyzer が生成した詳細グラフレポートを読み込みます。
+         *
+         * @return レポート内容（存在しない場合は null）
+         */
+        private String readDetailedGraphReport() {
+            try {
+                java.nio.file.Path reportPath = java.nio.file.Paths.get(
+                    System.getProperty("user.dir"), 
+                    "build", "reports", "cobol-dependency-report.md"
+                );
+                if (java.nio.file.Files.exists(reportPath)) {
+                    return new String(java.nio.file.Files.readAllBytes(reportPath), 
+                        java.nio.charset.StandardCharsets.UTF_8);
+                }
+            } catch (Exception e) {
+                // ファイル読み込み失敗時は無視
+            }
+            return null;
+        }
+        
+        /**
+         * 詳細グラフレポートから出現箇所（代入文）を抽出して、markdownに追加します。
+         *
+         * @param markdown 追記対象の StringBuilder
+         * @param graphContent グラフレポートのコンテンツ
+         */
+        private void extractAndAddAssignmentsFromGraph(StringBuilder markdown, String graphContent) {
+            try {
+                // "依存関係グラフ (カラム: ...)" セクションを探す
+                int graphSectionStart = graphContent.indexOf("## 依存関係グラフ");
+                if (graphSectionStart < 0) {
+                    return;
+                }
+                
+                // テーブル部分を抽出（最初の | から次のセクションまで）
+                int tableStart = graphContent.indexOf("|", graphSectionStart);
+                if (tableStart < 0) {
+                    return;
+                }
+                
+                String[] lines = graphContent.substring(tableStart).split("\n");
+                Map<String, String> fileLocationMap = new LinkedHashMap<>();
+                
+                // テーブルの行をパース（スキップ行を除く）
+                boolean isHeader = true;
+                for (String line : lines) {
+                    if (line.trim().isEmpty() || line.startsWith("##")) {
+                        break;
+                    }
+                    if (line.startsWith("|")) {
+                        if (isHeader && line.contains("---")) {
+                            isHeader = false;
+                            continue;
+                        }
+                        if (!isHeader) {
+                            // テーブル行をパース
+                            String[] cells = line.split("\\|");
+                            if (cells.length >= 4) {
+                                String filePath = cells[2].trim().replaceAll("`", "");
+                                String location = cells[4].trim().replaceAll("`", "");
+                                if (!filePath.isEmpty() && !location.isEmpty()) {
+                                    fileLocationMap.put(filePath, location);
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // 出現箇所をレポートに追加
+                if (!fileLocationMap.isEmpty()) {
+                    markdown.append("## Source Code References (Line Numbers)\n\n");
+                    markdown.append("| File | Location |\n");
+                    markdown.append("|---|---|\n");
+                    for (Map.Entry<String, String> entry : fileLocationMap.entrySet()) {
+                        markdown.append("| `").append(new java.io.File(entry.getKey()).getName())
+                            .append("` | `").append(entry.getValue()).append("` |\n");
+                    }
+                    markdown.append("\n");
+                }
+            } catch (Exception e) {
+                // パース失敗時は無視
             }
         }
     }
@@ -807,7 +821,7 @@ public class CobolColumnImpactAgent {
                 "2. Run DependencyAnalyzer to rebuild the Derby dependency database using cobolDir and copyDir\n" +
                 "3. Use DatabaseQuery to search the refreshed dependency database\n" +
                 "4. Scan COBOL files for table references\n" +
-                "5. Analyze COBOL code to identify variables that store the column\n" +
+                "5. Analyze COBOL code to identify variables that store the column and the assignment statements to those variables\n" +
                 "6. Save the analysis result as Markdown"
             )
             .maxAgentsInvocations(10)

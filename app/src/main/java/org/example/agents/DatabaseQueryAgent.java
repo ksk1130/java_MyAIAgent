@@ -1,6 +1,7 @@
 package org.example.agents;
 
 import dev.langchain4j.agentic.Agent;
+import dev.langchain4j.service.V;
 
 import java.sql.*;
 import java.util.*;
@@ -45,13 +46,21 @@ public class DatabaseQueryAgent {
         outputKey = "dependencyInfo"
     )
     public Map<String, Object> queryDependencies(
-        String tableName,
-        String columnName
+        @V("tableName") String tableName,
+        @V("columnName") String columnName
     ) {
         Map<String, Object> result = new HashMap<>();
-        
-        if (connection == null || tableName == null || columnName == null) {
-            result.put("error", "Invalid parameters or DB connection");
+
+        if (tableName == null || columnName == null) {
+            result.put("error", "Invalid parameters");
+            result.put("success", false);
+            return result;
+        }
+
+        ensureConnected();
+        if (connection == null) {
+            result.put("error", "DB connection is not available");
+            result.put("success", false);
             return result;
         }
         
@@ -75,6 +84,19 @@ public class DatabaseQueryAgent {
         }
         
         return result;
+    }
+
+    /**
+     * 必要に応じて Derby DB へ再接続します。
+     */
+    private void ensureConnected() {
+        try {
+            if (connection == null || connection.isClosed()) {
+                initializeDatabase();
+            }
+        } catch (SQLException e) {
+            initializeDatabase();
+        }
     }
     
     /**
@@ -209,6 +231,134 @@ public class DatabaseQueryAgent {
         }
         
         return callGraph;
+    }
+
+    /**
+     * 指定したカラムに関連する変数定義をデータベースから取得します。
+     *
+     * @param columnName カラム名
+     * @return 変数定義リスト
+     */
+    public List<Map<String, String>> queryVariableDefinitions(String columnName) {
+        List<Map<String, String>> definitions = new ArrayList<>();
+        
+        ensureConnected();
+        if (connection == null) {
+            return definitions;
+        }
+        
+        try {
+            String sql = "SELECT file_path, variable_name, level_number, pic_clause, description " +
+                         "FROM variable_definitions " +
+                         "WHERE UPPER(column_name) = ? " +
+                         "ORDER BY file_path, variable_name";
+            
+            try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                stmt.setString(1, columnName.toUpperCase());
+                
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        Map<String, String> def = new LinkedHashMap<>();
+                        def.put("filePath", rs.getString("file_path"));
+                        def.put("variableName", rs.getString("variable_name"));
+                        def.put("level", rs.getString("level_number"));
+                        def.put("picClause", rs.getString("pic_clause"));
+                        def.put("description", rs.getString("description"));
+                        definitions.add(def);
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("[DatabaseQueryAgent] 変数定義クエリエラー: " + e.getMessage());
+        }
+        
+        return definitions;
+    }
+
+    /**
+     * 指定したカラムに関連する代入文をデータベースから取得します。
+     * （注意：現在は column_name に依存しており、関連変数の代入文を取得）
+     *
+     * @param columnName カラム名
+     * @return 代入文リスト
+     */
+    public List<Map<String, String>> queryVariableAssignments(String columnName) {
+        // 指定されたカラムに関連する変数名を取得
+        Set<String> relatedVariables = new HashSet<>();
+        try {
+            String varSql = "SELECT DISTINCT variable_name FROM variable_definitions " +
+                           "WHERE UPPER(column_name) = ?";
+            try (PreparedStatement stmt = connection.prepareStatement(varSql)) {
+                stmt.setString(1, columnName.toUpperCase());
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        relatedVariables.add(rs.getString("variable_name").toUpperCase());
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("[DatabaseQueryAgent] 関連変数取得エラー: " + e.getMessage());
+        }
+        
+        // すべての代入文を取得してから、関連変数でフィルタリング
+        List<Map<String, String>> assignments = new ArrayList<>();
+        
+        ensureConnected();
+        if (connection == null) {
+            return assignments;
+        }
+        
+        try {
+            // 関連変数がある場合のみ、その変数についての代入文を取得
+            if (!relatedVariables.isEmpty()) {
+                String sql = "SELECT file_path, variable_name, line_number, statement_type, source_line " +
+                             "FROM variable_assignments " +
+                             "ORDER BY file_path, line_number";
+                
+                try (Statement stmt = connection.createStatement();
+                     ResultSet rs = stmt.executeQuery(sql)) {
+                    while (rs.next()) {
+                        String varName = rs.getString("variable_name").toUpperCase();
+                        // 関連変数またはカラム名そのものの代入文を取得
+                        if (relatedVariables.contains(varName) || varName.equals(columnName.toUpperCase())) {
+                            Map<String, String> assign = new LinkedHashMap<>();
+                            assign.put("filePath", rs.getString("file_path"));
+                            assign.put("variableName", rs.getString("variable_name"));
+                            assign.put("lineNumber", String.valueOf(rs.getInt("line_number")));
+                            assign.put("statementType", rs.getString("statement_type"));
+                            assign.put("sourceLine", rs.getString("source_line"));
+                            assignments.add(assign);
+                        }
+                    }
+                }
+            } else {
+                // 関連変数がない場合は、カラム名そのものの代入文を取得
+                String sql = "SELECT file_path, variable_name, line_number, statement_type, source_line " +
+                             "FROM variable_assignments " +
+                             "WHERE UPPER(variable_name) = ? " +
+                             "ORDER BY file_path, line_number";
+                
+                try (PreparedStatement stmt = connection.prepareStatement(sql)) {
+                    stmt.setString(1, columnName.toUpperCase());
+                    
+                    try (ResultSet rs = stmt.executeQuery()) {
+                        while (rs.next()) {
+                            Map<String, String> assign = new LinkedHashMap<>();
+                            assign.put("filePath", rs.getString("file_path"));
+                            assign.put("variableName", rs.getString("variable_name"));
+                            assign.put("lineNumber", String.valueOf(rs.getInt("line_number")));
+                            assign.put("statementType", rs.getString("statement_type"));
+                            assign.put("sourceLine", rs.getString("source_line"));
+                            assignments.add(assign);
+                        }
+                    }
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("[DatabaseQueryAgent] 代入文クエリエラー: " + e.getMessage());
+        }
+        
+        return assignments;
     }
     
     /**

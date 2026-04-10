@@ -63,6 +63,10 @@ java {
     }
 }
 
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['-parameters']
+}
+
 application {
     // Define the main class for the application.
     // App.java が ChatCLI と AgentChatCLI の両方をサポートするエントリポイント
@@ -128,6 +132,56 @@ task runIntegratedAnalysisDemo(type: JavaExec) {
     if (project.hasProperty('appArgs')) {
         args project.appArgs.split()
     }
+    
+    workingDir project.rootDir
+}
+
+// DB 内容確認タスク
+task checkDatabase(type: JavaExec) {
+    description = 'Check Derby Database Content'
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.cobol.CheckDatabaseContent'
+    
+    workingDir project.rootDir
+}
+
+// 解析ユーティリティのデバッグタスク
+task debugAnalysisUtil(type: JavaExec) {
+    description = 'Debug CobolColumnAnalysisUtil'
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.cobol.DebugAnalysisUtil'
+    
+    workingDir project.rootDir
+}
+
+// Line 50 デバッグタスク
+task debugLine50(type: JavaExec) {
+    description = 'Debug Line 50 in symfo_inst.cbl'
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.cobol.DebugLine50'
+    
+    workingDir project.rootDir
+}
+
+// Line 50 デバッグタスク（ログ付き）
+task debugLine50WithLogging(type: JavaExec) {
+    description = 'Debug Line 50 with verbose logging'
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.cobol.DebugLine50WithLogging'
+    
+    workingDir project.rootDir
+}
+
+// MOVE パターンテストタスク
+task testMovePattern(type: JavaExec) {
+    description = 'Test MOVE pattern matching'
+    group = 'application'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.cobol.TestMovePattern'
     
     workingDir project.rootDir
 }

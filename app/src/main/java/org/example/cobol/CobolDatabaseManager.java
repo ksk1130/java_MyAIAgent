@@ -93,13 +93,58 @@ public class CobolDatabaseManager {
                         copybook_name VARCHAR(100) NOT NULL,
                         copy_depth INT,
                         via_copybook VARCHAR(100),
-                        location VARCHAR(500),
+                        copy_location VARCHAR(500),
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         FOREIGN KEY (program_id) REFERENCES cobol_programs(program_id)
                     )
                     """;
             stmt.execute(createCobolCopyDependency);
         } catch (Exception e) {
+        }
+        try (var stmt = connection.createStatement()) {
+            var createVariableDefinitions = """
+                    CREATE TABLE variable_definitions (
+                        var_id VARCHAR(300) PRIMARY KEY,
+                        file_path VARCHAR(500) NOT NULL,
+                        column_name VARCHAR(100) NOT NULL,
+                        variable_name VARCHAR(100) NOT NULL,
+                        level_number VARCHAR(10),
+                        pic_clause VARCHAR(100),
+                        description VARCHAR(500),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """;
+            stmt.execute(createVariableDefinitions);
+        } catch (Exception e) {
+        }
+        try (var stmt = connection.createStatement()) {
+            var createVariableAssignments = """
+                    CREATE TABLE variable_assignments (
+                        assign_id VARCHAR(400) PRIMARY KEY,
+                        file_path VARCHAR(500) NOT NULL,
+                        column_name VARCHAR(100) NOT NULL,
+                        variable_name VARCHAR(100) NOT NULL,
+                        line_number INT,
+                        statement_type VARCHAR(50),
+                        source_line VARCHAR(1000),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """;
+            stmt.execute(createVariableAssignments);
+        } catch (Exception e) {
+        }
+    }
+
+    /**
+     * DB接続を閉じる
+     */
+    public void close() {
+        if (connection != null) {
+            try {
+                connection.close();
+            } catch (SQLException e) {
+                // ログするが続行
+            }
         }
     }
 

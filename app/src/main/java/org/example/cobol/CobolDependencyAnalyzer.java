@@ -8,6 +8,8 @@ import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -35,6 +37,8 @@ public class CobolDependencyAnalyzer {
     private CobolDependencyParser dependencyParser;
     private CobolDependencyGraph dependencyGraph;
     private CobolProgramRegistrar programRegistrar;
+    private final CobolColumnAnalysisUtil columnAnalysisUtil;
+    private CobolColumnAnalysisUtil.ColumnAnalysisSummary targetColumnSummary;
     private static final Logger logger = LoggerFactory.getLogger(CobolDependencyAnalyzer.class);
 
     /**
@@ -66,6 +70,8 @@ public class CobolDependencyAnalyzer {
         this.loggedResolvedCopybooks = new HashSet<>();
         this.fileFinder = new CobolFileFinder(this.cobolDir, this.copyDir);
         this.dbManager = new CobolDatabaseManager(DB_URL);
+        this.columnAnalysisUtil = new CobolColumnAnalysisUtil();
+        this.targetColumnSummary = CobolColumnAnalysisUtil.ColumnAnalysisSummary.empty(this.targetColumn);
         // dependencyParser、dependencyGraph、programRegistrarはrun()内で初期化
     }
 
@@ -193,6 +199,13 @@ public class CobolDependencyAnalyzer {
             copybookPathMap = fileFinder.indexCopybookFiles();
             logger.info("検出ファイル数: {}", cobolFiles.size());
             logger.info("検出COPYブック数: {}", copybookPathMap.size());
+                targetColumnSummary = collectTargetColumnSummary(cobolFiles, copybookPathMap);
+                logger.info("対象カラム解析サマリ: column={}, analyzedFiles={}, matchedFiles={}, variables={}, assignments={}",
+                    targetColumnSummary.columnName(),
+                    targetColumnSummary.analyzedFileCount(),
+                    targetColumnSummary.matchedFileCount(),
+                    targetColumnSummary.variableCount(),
+                    targetColumnSummary.assignmentCount());
 
             // 責務クラスを初期化
             programRegistrar = new CobolProgramRegistrar(connection);
@@ -208,6 +221,9 @@ public class CobolDependencyAnalyzer {
             for (var cobolFile : cobolFiles) {
                 dependencyParser.analyzeDependencies(cobolFile);
             }
+
+            // フェーズ 3: 変数定義と代入文を DB に記録
+            recordVariableDefinitionsAndAssignments(cobolFiles, copybookPathMap);
 
             dependencyGraph.displayDependencyGraph();
 
@@ -226,6 +242,55 @@ public class CobolDependencyAnalyzer {
     public void setTargetColumn(String column) {
         if (!Strings.isNullOrEmpty(column)) {
             this.targetColumn = column.toUpperCase();
+            this.targetColumnSummary = CobolColumnAnalysisUtil.ColumnAnalysisSummary.empty(this.targetColumn);
+        }
+    }
+
+    /**
+     * 対象カラム解析の集計サマリを返します。
+     *
+     * @return 対象カラム解析サマリ
+     */
+    public CobolColumnAnalysisUtil.ColumnAnalysisSummary getTargetColumnSummary() {
+        return targetColumnSummary;
+    }
+
+    /**
+     * COBOL ソースと COPY ブックを対象に、指定カラム由来の変数定義と代入文を集計します。
+     *
+     * @param cobolFiles COBOL ソース一覧
+     * @param copybookPaths COPY ブック一覧
+     * @return 集計サマリ
+     */
+    private CobolColumnAnalysisUtil.ColumnAnalysisSummary collectTargetColumnSummary(
+        List<Path> cobolFiles,
+        Map<String, Path> copybookPaths) {
+        Map<String, CobolColumnAnalysisUtil.ColumnAnalysis> analyses = new LinkedHashMap<>();
+
+        for (Path cobolFile : cobolFiles) {
+            addColumnAnalysis(analyses, cobolFile);
+        }
+        for (Path copybookPath : copybookPaths.values()) {
+            addColumnAnalysis(analyses, copybookPath);
+        }
+
+        return columnAnalysisUtil.summarizeAnalyses(targetColumn, analyses, cobolFiles.size() + copybookPaths.size());
+    }
+
+    /**
+     * 単一ファイルの対象カラム解析結果を集計対象へ追加します。
+     *
+     * @param analyses 集計対象
+     * @param filePath 対象ファイル
+     */
+    private void addColumnAnalysis(Map<String, CobolColumnAnalysisUtil.ColumnAnalysis> analyses, Path filePath) {
+        if (filePath == null) {
+            return;
+        }
+
+        var analysis = columnAnalysisUtil.analyzeFile(filePath, targetColumn);
+        if (!analysis.variables().isEmpty() || !analysis.assignments().isEmpty()) {
+            analyses.put(filePath.toString(), analysis);
         }
     }
 
@@ -233,12 +298,142 @@ public class CobolDependencyAnalyzer {
      * データベース接続を安全に閉じ、Derby エンジンをシャットダウンします。
      */
     private void shutdownDatabase() {
+        if (dbManager != null) {
+            dbManager.close();
+        }
+        connection = null;
+    }
+
+    /**
+     * 変数定義と代入文をデータベースに記録します。
+     *
+     * @param cobolFiles COBOL ソースファイル一覧
+     * @param copybookPathMap COPY ブックパスマップ
+     */
+    private void recordVariableDefinitionsAndAssignments(
+            List<Path> cobolFiles,
+            Map<String, Path> copybookPathMap) {
+        Map<String, Path> filesToAnalyze = new LinkedHashMap<>();
+
+        // COBOL ファイルを追加
+        for (Path file : cobolFiles) {
+            filesToAnalyze.put(file.toString(), file);
+        }
+
+        // COPY ブックを追加
+        for (Path file : copybookPathMap.values()) {
+            filesToAnalyze.put(file.toString(), file);
+        }
+
+        // ===== パス 1: すべてのファイルから変数定義を収集 =====
+        List<CobolColumnAnalysisUtil.VariableDefinition> allVariables = new ArrayList<>();
+        Map<Path, String> normalizedContents = new LinkedHashMap<>();
+        
+        for (Path filePath : filesToAnalyze.values()) {
+            try {
+                // ファイル内容を読み込んで正規化
+                String normalizedContent = columnAnalysisUtil.readNormalizedFile(filePath);
+                normalizedContents.put(filePath, normalizedContent);
+                
+                // 変数定義を解析
+                CobolColumnAnalysisUtil.ColumnAnalysis analysis =
+                    columnAnalysisUtil.analyzeContent(normalizedContent, targetColumn);
+
+                // 変数定義を DB に記録し、全変数リストに追加
+                for (CobolColumnAnalysisUtil.VariableDefinition var : analysis.variables()) {
+                    recordVariableDefinition(filePath.toString(), var);
+                    allVariables.add(var);
+                }
+            } catch (Exception e) {
+                logger.warn("変数定義解析エラー ({}): {}", filePath, e.getMessage());
+            }
+        }
+
+        logger.info("全変数定義数: {}", allVariables.size());
+
+        // ===== パス 2: すべてのファイルの代入文を解析（全変数リストを使用） =====
+        for (Map.Entry<Path, String> entry : normalizedContents.entrySet()) {
+            Path filePath = entry.getKey();
+            String normalizedContent = entry.getValue();
+            
+            try {
+                // 全変数リストを使って代入文を抽出
+                List<CobolColumnAnalysisUtil.AssignmentOccurrence> assignments =
+                    columnAnalysisUtil.extractAssignmentsOnly(normalizedContent, allVariables);
+
+                // 代入文を DB に記録
+                for (CobolColumnAnalysisUtil.AssignmentOccurrence assignment : assignments) {
+                    recordVariableAssignment(filePath.toString(), assignment);
+                }
+                
+                if (!assignments.isEmpty()) {
+                    logger.debug("代入文検出 ({}): {} 件", filePath.getFileName(), assignments.size());
+                }
+            } catch (Exception e) {
+                logger.warn("代入文解析エラー ({}): {}", filePath, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 変数定義をデータベースに記録します。
+     *
+     * @param filePath ファイルパス
+     * @param varDef 変数定義
+     */
+    private void recordVariableDefinition(String filePath, CobolColumnAnalysisUtil.VariableDefinition varDef) {
         try {
-            if (dbManager != null && dbManager.getConnection() != null) {
-                dbManager.getConnection().close();
+            String sql = """
+                INSERT INTO variable_definitions (var_id, file_path, column_name, variable_name, 
+                    level_number, pic_clause, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """;
+
+            String varId = filePath + ":" + varDef.name() + ":" + targetColumn;
+            try (var pstmt = connection.prepareStatement(sql)) {
+                pstmt.setString(1, varId);
+                pstmt.setString(2, filePath);
+                pstmt.setString(3, targetColumn);
+                pstmt.setString(4, varDef.name());
+                pstmt.setString(5, varDef.level());
+                pstmt.setString(6, varDef.picClause());
+                pstmt.setString(7, varDef.description());
+                pstmt.execute();
             }
         } catch (Exception e) {
-            // 無視
+            logger.debug("変数定義記録エラー: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 代入文をデータベースに記録します。
+     *
+     * @param filePath ファイルパス
+     * @param assignment 代入文
+     */
+    private void recordVariableAssignment(
+            String filePath,
+            CobolColumnAnalysisUtil.AssignmentOccurrence assignment) {
+        try {
+            String sql = """
+                INSERT INTO variable_assignments (assign_id, file_path, column_name, variable_name, 
+                    line_number, statement_type, source_line)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """;
+
+            String assignId = filePath + ":" + assignment.variableName() + ":" + assignment.lineNumber();
+            try (var pstmt = connection.prepareStatement(sql)) {
+                pstmt.setString(1, assignId);
+                pstmt.setString(2, filePath);
+                pstmt.setString(3, targetColumn);
+                pstmt.setString(4, assignment.variableName());
+                pstmt.setInt(5, assignment.lineNumber());
+                pstmt.setString(6, assignment.statementType());
+                pstmt.setString(7, assignment.sourceLine());
+                pstmt.execute();
+            }
+        } catch (Exception e) {
+            logger.debug("代入文記録エラー: {}", e.getMessage());
         }
     }
 }

@@ -59,12 +59,18 @@ public class CobolDependencyGraph {
               FROM cobol_call_dependency ccd
               JOIN cobol_programs p1 ON ccd.caller_program_id = p1.program_id
               JOIN cobol_programs p2 ON ccd.callee_program_id = p2.program_id
+                            WHERE ccd.callee_program_id IN (
+                                    SELECT DISTINCT cta.program_id
+                                        FROM cobol_table_access cta
+                                     WHERE cta.column_id LIKE ?
+                            )
             ) AS results
             ORDER BY dependency_type DESC, program_name
         """;
 
         try (var pstmt = connection.prepareStatement(sql)) {
             pstmt.setString(1, "%:" + targetColumn);
+                        pstmt.setString(2, "%:" + targetColumn);
             try (var rs = pstmt.executeQuery()) {
                 while (rs.next()) {
                     rows.add(new DependencyGraphRow(
