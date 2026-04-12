@@ -86,21 +86,14 @@ public class CobolColumnImpactAgentTest {
                 fixedFormatLine("INTO :ZIPCODE"),
                 fixedFormatLine("END-EXEC.")));
 
-            var agent = new CobolColumnImpactAgent.CobolAnalyzerAgent();
-            Map<String, Object> result = agent.analyze(
-                List.of(cobolFile.toString()),
-                "ZIPCODE",
-                cobolDir.toString(),
-                copyDir.toString());
+            CobolColumnAnalysisUtil util = new CobolColumnAnalysisUtil();
+            var analysis = util.analyzeFile(cobolFile, "ZIPCODE");
 
-            @SuppressWarnings("unchecked")
-            Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> fileAssignments =
-                (Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>>) result.get("fileAssignments");
+            List<CobolColumnAnalysisUtil.AssignmentOccurrence> assignments = analysis.assignments();
 
-            assertTrue(fileAssignments.containsKey(cobolFile.toString()));
-            assertEquals(2, fileAssignments.get(cobolFile.toString()).size());
-            assertEquals("MOVE TO", fileAssignments.get(cobolFile.toString()).get(0).statementType());
-            assertEquals("EXEC SQL INTO", fileAssignments.get(cobolFile.toString()).get(1).statementType());
+            assertEquals(2, assignments.size());
+            assertEquals("MOVE TO", assignments.get(0).statementType());
+            assertEquals("EXEC SQL INTO", assignments.get(1).statementType());
             }
 
     /**

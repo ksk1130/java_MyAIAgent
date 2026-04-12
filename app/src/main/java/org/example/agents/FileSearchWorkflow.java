@@ -4,10 +4,15 @@ import dev.langchain4j.model.openai.OpenAiChatModel;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+
+import org.example.ChatCLI;
+import org.jline.reader.LineReader;
 
 /**
  * ファイル検索・選択・要約ワークフロー。
@@ -75,7 +80,7 @@ public class FileSearchWorkflow {
      * @param keyword   検索キーワード
      * @return マッチしたファイルパスのリスト
      */
-    public List<String> searchFiles(String directory, String keyword) {
+    public List<Path> searchFiles(String directory, String keyword) {
         FileExtractor extractor = new FileExtractor();
         return extractor.search(directory, keyword);
     }
@@ -86,40 +91,41 @@ public class FileSearchWorkflow {
      * @param foundFiles 見つかったファイルのリスト
      * @return ユーザーが選択したファイルパス
      */
-    public String selectFileInteractive(List<String> foundFiles) {
+    public Path selectFileInteractive(PrintWriter writer, LineReader lineReader, boolean colorEnabled, List<Path> foundFiles) throws IOException {
         if (foundFiles.isEmpty()) {
-            System.out.println("マッチするファイルが見つかりませんでした。");
+            writer.println(ChatCLI.aiLabel(colorEnabled) + "マッチするファイルが見つかりませんでした。");
+            writer.flush();
             return null;
         }
 
-        System.out.println("\n========================================");
-        System.out.println("見つかったファイル:");
-        System.out.println("========================================");
+        writer.println(ChatCLI.aiLabel(colorEnabled) + "\n========================================");
+        writer.println(ChatCLI.aiLabel(colorEnabled) + "見つかったファイル:");
+        writer.println(ChatCLI.aiLabel(colorEnabled) + "========================================");
         for (int i = 0; i < foundFiles.size(); i++) {
-            System.out.printf("%d. %s%n", i + 1, foundFiles.get(i));
+            writer.printf(ChatCLI.aiLabel(colorEnabled) + "%d. %s%n", i + 1, foundFiles.get(i).toAbsolutePath().toString());
         }
-        System.out.println("========================================");
+        writer.println(ChatCLI.aiLabel(colorEnabled) + "========================================");
+        writer.flush();
 
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(System.in, StandardCharsets.UTF_8))) {
-            while (true) {
-                System.out.print("要約したいファイルの番号を入力してください (1-" + foundFiles.size() + "): ");
-                String input = reader.readLine();
+        while (true) {
+            String input = lineReader.readLine(ChatCLI.aiLabel(colorEnabled) + "要約したいファイルの番号を入力してください (1-" + foundFiles.size() + "): ");
 
-                try {
-                    int index = Integer.parseInt(input);
-                    if (index >= 1 && index <= foundFiles.size()) {
-                        return foundFiles.get(index - 1);
-                    } else {
-                        System.out.println("無効な番号です。もう一度入力してください。");
-                    }
-                } catch (NumberFormatException e) {
-                    System.out.println("数値を入力してください。");
-                }
+            if (input == null) { // Ctrl+D or EOF
+                return null;
             }
-        } catch (IOException e) {
-            System.err.println("入力エラー: " + e.getMessage());
-            return null;
+
+            try {
+                int index = Integer.parseInt(input.trim());
+                if (index >= 1 && index <= foundFiles.size()) {
+                    return foundFiles.get(index - 1);
+                } else {
+                    writer.println(ChatCLI.aiLabel(colorEnabled) + "無効な番号です。もう一度入力してください。");
+                    writer.flush();
+                }
+            } catch (NumberFormatException e) {
+                writer.println(ChatCLI.aiLabel(colorEnabled) + "数値を入力してください。");
+                writer.flush();
+            }
         }
     }
 
@@ -156,7 +162,7 @@ public class FileSearchWorkflow {
      * @param userInput ユーザーの自然言語入力
      * @return 要約結果
      */
-    public String executeWorkflow(String userInput) {
+    public List<Path> findFiles(String userInput) { // 戻り値の型を List<Path> に変更し、メソッド名を変更
         System.out.println("\n[ステップ1] ユーザーの入力を解析中...");
         Map<String, String> intents = extractIntents(userInput);
 
@@ -164,31 +170,31 @@ public class FileSearchWorkflow {
         String keyword = intents.get("keyword");
 
         if (directory == null || keyword == null) {
-            return "ディレクトリまたはキーワードを抽出できませんでした。入力形式を確認してください。";
+            System.err.println("ディレクトリまたはキーワードを抽出できませんでした。入力形式を確認してください。");
+            return Collections.emptyList(); // エラー時は空リストを返却
         }
 
         System.out.println("  抽出されたディレクトリ: " + directory);
         System.out.println("  抽出されたキーワード: " + keyword);
 
         System.out.println("\n[ステップ2] ファイルを検索中...");
-        List<String> foundFiles = searchFiles(directory, keyword);
+        List<Path> foundFiles = searchFiles(directory, keyword); // List<Path> を使用
         System.out.println("  見つかったファイル数: " + foundFiles.size());
+        
+        return foundFiles; // 検索結果を返却
+    }
 
-        if (foundFiles.isEmpty()) {
-            return "マッチするファイルが見つかりませんでした。";
-        }
-
-        System.out.println("\n[ステップ3] ユーザーによるファイル選択...");
-        String selectedFile = selectFileInteractive(foundFiles);
-
-        if (selectedFile == null) {
-            return "ファイルが選択されませんでした。";
-        }
-
-        System.out.println("  選択されたファイル: " + selectedFile);
+    /**
+     * 選択されたファイルを読み込み、AIで要約します。
+     *
+     * @param selectedFilePath 選択されたファイルのパス
+     * @return 要約結果
+     */
+    public String summarizeSelectedFile(String selectedFilePath) {
+        System.out.println("  選択されたファイル: " + selectedFilePath);
 
         System.out.println("\n[ステップ4] ファイルを読み込み中...");
-        String fileContent = readFileContent(selectedFile);
+        String fileContent = readFileContent(selectedFilePath);
 
         if (fileContent == null) {
             return "ファイルの読み込みに失敗しました。";

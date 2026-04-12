@@ -21,17 +21,18 @@ LangChain4j / OpenAI を使った Java CLI ベースの AI エージェントで
 |---|---|---|---|
 | `OPENAI_API_KEY` | ✅ | OpenAI の API キー | − |
 | `OPENAI_MODEL` | | 使用モデル | `gpt-4o-mini` |
-| `OPENAI_API_URL` | | カスタムエンドポイント URL | OpenAI 既定 |
-| `CHAT_MEMORY_WINDOW` | | 会話履歴ウィンドウのサイズ | `50` |
+| `OPENAI_API_URL` | | カスタムエンドポイント URL（未使用） | − |
+| `CHAT_MEMORY_WINDOW` | | 会話履歴ウィンドウのサイズ | `100` |
 | `CHAT_AGENT_MAX_STEPS` | | 1ターン内のエージェント最大ステップ数（1〜10） | `5` |
 | `CHAT_SYSTEM_PROMPT` | | システムプロンプトの全文 | 組み込み既定値 |
+| `CHAT_AUTO_APPROVE` | | One-shot 実行時にローカルコマンドの自動承認を有効にする | `true` |
 | `CHAT_NO_COLOR` | | `true` の場合、色付け表示を無効化 | `false` 相当 |
 
 Windows (PowerShell) での設定例:
 ```powershell
 $env:OPENAI_API_KEY = "sk-..."
 $env:OPENAI_MODEL = "gpt-4o-mini"
-$env:CHAT_MEMORY_WINDOW = "50"
+$env:CHAT_MEMORY_WINDOW = "100"
 $env:CHAT_AGENT_MAX_STEPS = "5"
 ```
 
@@ -53,7 +54,7 @@ JRE を同梱したポータブル版パッケージを作成できます：
 出力先: `app/build/distribution/app/`
 
 このパッケージは以下を含みます：
-- `run.bat` - アプリケーション起動スクリプト（自動的に App.java をルーティング）
+- `run.bat` - アプリケーション起動スクリプト
 - `lib/` - JAR ファイルと依存ライブラリ
 - `jre/` - Java 21 ポータブル実行環境（jlink 生成）
 - `README.txt` - 使用方法
@@ -63,18 +64,11 @@ JRE を同梱したポータブル版パッケージを作成できます：
 # ポータブルパッケージディレクトリに移動
 cd app\build\distribution\app\
 
-# 従来版 ChatCLI - 対話モード（デフォルト）
+# ChatCLI - 対話モード
 .\run.bat
 
-# または明示的に指定
-.\run.bat chat
-
-# Agent対応版 - 対話モード
-.\run.bat agent chat
-
-# Agent対応版 - ファイル検索コマンド
-.\run.bat agent
-# （起動後に /filesearch コマンドが利用可能）
+# ChatCLI - ファイル検索機能の利用（起動後に利用可能）
+# > /filesearch src keyword
 ```
 
 **注意:**
@@ -86,28 +80,22 @@ cd app\build\distribution\app\
 
 ## 実行 - 対話モード（推奨）
 
-### 従来版 ChatCLI
 ```powershell
-.\gradlew.bat :app:run --args="agent chat"
+.\gradlew.bat :app:run
 ```
 `installDist` でネイティブ起動スクリプトを使うと Unicode 入力が安定します:
+```powershell
 .\gradlew.bat :app:installDist
-.\app\build\install\app\bin\app.bat chat
-.\app\build\install\app\bin\app.bat agent chat
+.\app\build\install\app\bin\app.bat
+```
 
 プロンプトで入力し、`exit` または `quit` を入力すると終了します。
 
 ## 実行 - 単発メッセージ（CI や非対話環境向け）
 Gradle の `--args` を使って一度だけメッセージを送信できます:
 
-### 従来版 ChatCLI
 ```powershell
 .\gradlew.bat :app:run --args="このコードを解析してください"
-```
-
-### Agent対応版 AgentCLI
-```powershell
-.\gradlew.bat :app:run --args="agent このコードを解析してください"
 ```
 
 ## 表示機能
@@ -141,13 +129,11 @@ AI: ✓ 会話履歴と入力履歴をクリアしました
 
 
 AIが自然言語からディレクトリとキーワードを抽出し、ユーザーが対話的にファイルを選択したら、内容をAIが要約します。
-### 主要機能
-1. **Intent 抽出**: ユーザーの自然言語から、検索対象のディレクトリとキーワードをAIが自動抽出
-3. **対話的ファイル選択**: 見つかったファイルを番号付きリストで表示し、ユーザーが選択
-5. **AI 要約**: LLMを使用して、ファイル内容を自動要約
-### AgentChatCLI での使用（推奨）
-Agent対応版 (`./gradlew.bat :app:run --args="agent chat"`) を使用することで、CLI内から FileSearchWorkflow を直接利用できます：
+### ファイル検索ワークフロー（/filesearch）の使用
+LLM（Function Calling）による自律実行に加えて、専用のファイル検索ワークフローを利用できます。
+
 **ファイル検索コマンド:**
+```text
 User: /filesearch test_sample report
 ```
 
@@ -163,6 +149,16 @@ User: /filesearch test_sample report
 [AI要約中...]
 AI: このファイルはアプリケーション設定を定義しています...
 ```
+
+### ヘルプコマンド (/help)
+
+対話モードで `/help` を入力すると、利用可能なスラッシュコマンドと簡単な説明が表示されます。例:
+
+```text
+User: /help
+```
+
+このコマンドは対話中に使用してください。表示されるコマンド例には `exit`（終了）、`/clear`（履歴クリア）、`/filesearch`（ファイル検索ワークフロー）、`/plan`（タスクの自律実行）などが含まれます。より詳しいコマンドリファレンスは `docs/ChatCLI.md` を参照してください。
 
 ### 直接利用（Java コード）
 
@@ -205,7 +201,7 @@ public class Example {
 - **AI 要約**: `@UserMessage` アノテーション付き `AiServices` インタフェース
 
 詳細は以下のドキュメントを参照してください：
-- [AgentChatCLI ユーザーガイド](docs/AgentChatCLI.md) - コマンドリファレンス
+- [ChatCLI ユーザーガイド](docs/ChatCLI.md) - コマンドリファレンス
 - [FileSearchWorkflow API 仕様](docs/FileSearchWorkflow.md)
 - [実装ガイド - LangChain4j設計パターン](docs/IMPLEMENTATION_GUIDE.md)
 
@@ -228,9 +224,7 @@ AI: （2行を連結した入力として処理）
 ### エントリポイント
 | クラス | パス | 説明 |
 |---|---|---|
-| `App` | `app/src/main/java/org/example/App.java` | アプリケーションの起動クラス。引数 `agent` の有無で ChatCLI または AgentChatCLI を選択します。 |
-| `ChatCLI` | `app/src/main/java/org/example/ChatCLI.java` | 従来版 CLI チャットアプリケーション。対話モード・単発モードを提供し、AiServices で Assistant を生成します。 |
-| `AgentChatCLI` | `app/src/main/java/org/example/AgentChatCLI.java` | **Agent対応版** - FileSearchWorkflow などのエージェント機能をサポート。`/filesearch` コマンドで対話的ファイル検索が可能です。 |
+| `ChatCLI` | `app/src/main/java/org/example/ChatCLI.java` | アプリケーションのエントリポイント。対話モード・単発モード・`/filesearch` の全てを提供します。 |
 
 ### ツールクラス（`org.example.tools` パッケージ）
 
@@ -241,7 +235,8 @@ AiServices に登録済み（LLM が Function Calling で呼び出し可能）:
 | `LocalCommandTool` | LLM が生成した読み取り専用コマンドを `pwsh` で実行します。`rg`・`Select-String`・`findstr`・`dir`・`ls`・`git status/log/show/diff/branch` などを想定。禁止操作パターン (`rm`, `del`, `git reset` 等) はブロックし、実行前に承認を要求します。 |
 | `ImpactAnalysisTool` | テーブル名変更時の影響範囲を推移的に推定します。SQL 参照シンボルを起点に、Java/COBOL の参照を逆方向へたどって影響候補ファイルを列挙します。`analyzeTableImpact(table)` に加え、`analyzeTableImpactInRoot(table, rootDir)` で探索ルート指定も可能です。 |
 | `FileReaderTool` | 拡張子ホワイトリスト方式でテキストファイルを読み込みます。UTF-8 → Shift_JIS の順でデコードを試みます。 |
-| `FileWriterTool` | 拡張子ホワイトリスト方式でテキストファイルを書き込みます。親ディレクトリ自動作成、UTF-8 で保存します。 |
+| `FileWriterTool` | 拡張子ホワイトリスト方式でテキストファイルを書き込みます。親ディレクトリ自動作成、UTF-8 で保存します。（ファイル全体の上書き用） |
+| `FileEditorTool` | 拡張子ホワイトリスト方式でテキストファイルの一部のみを置換します。指定文字列がファイル内で一つだけ完全に一致する場合のみ安全に置換します。（部分的な編集用） |
 | `Calculator` | 加算・平方根など数値計算のサンプルツール。 |
 
 ### エージェント・ワークフロー
@@ -572,73 +567,30 @@ call_symfo_inst calls: [symfo_inst]
 
 ## ツールアーキテクチャ
 
-### ChatCLI（従来版）- Function Calling ベース
+### ChatCLI - ハイブリッド・アーキテクチャ
 
-```
+以前は `ChatCLI`（通常版）と `AgentChatCLI`（エージェント版）に分かれていましたが、現在は **`ChatCLI`** ひとつに統一され、両方の利点を備えています。
+
+```text
 ユーザ入力
     │
-    ▼
-ChatCLI#runChat()
-    │
-    ├─ コードブロック表示時にシンタックスハイライト（ANSI）
-    │
-    ├─ isSelectionInput() → 検索結果から番号選択の場合は handleSelectionInput() へ
-    │
-    └─ assistant.chat(input)  ← LLM Function Calling（優先）
-           │
-           ├─ LocalCommandTool#runSearchCommand()
-           │      1回目: 実行せず確認メッセージを返却
-           │      2回目: ユーザが「はい」なら実行
-           │      pwsh -NoProfile -Command <LLM が生成したコマンド>
-           │      出力上限 12,000 文字 / タイムアウト 20 秒
-           │
-           ├─ ImpactAnalysisTool#analyzeTableImpact()
-           │      テーブル名を起点に SQL 参照クラスを検出
-           │      Java/COBOL の呼び出し元を逆方向にたどって推移影響を列挙
-           │
-           ├─ FileReaderTool#readFile()
-           │      ホワイトリスト拡張子のみ / 上限 20,000 文字
-           │
-           ├─ FileWriterTool#writeFile()
-           │      ホワイトリスト拡張子のみ / 上限 100,000 文字
-           │
-           └─ Calculator#add() / squareRoot()
-```
-
-### AgentChatCLI（Agent対応版）- ワークフローベース
-
-```
-ユーザ入力
-    │
-    ├─ 通常のチャット
+    ├─ 通常のチャット (Assistant への Function Calling)
     │      ↓
-    │  assistant.chat(input)  ← Function Calling（ChatCLI と同じ）
+    │  assistant.chat(input)
+    │      ├─ LocalCommandTool
+    │      ├─ ImpactAnalysisTool
+    │      ├─ FileReaderTool
+    │      └─ ...
     │
     └─ /filesearch コマンド
            ↓
        FileSearchWorkflow#executeWorkflow()
-           │
            ├─ [1] IntentExtractor (AI)
-           │       ↓ (ディレクトリ・キーワードを抽出)
-           │
-           ├─ [2] FileSearchAgent (Files.walk())
-           │       ↓ (ファイル検索)
-           │
-           ├─ [3] FileSelector (ユーザー対話)
-           │       ↓ (ファイル選択)
-           │
-           ├─ [4] FileReadAgent (Files.readString())
-           │       ↓ (ファイル読み込み)
-           │
+           ├─ [2] FileSearchAgent (Files.walk)
+           ├─ [3] FileSelector (対話的選択)
+           ├─ [4] FileReadAgent
            └─ [5] FileSummarizer (AI)
-                   ↓ (要約生成)
-                 ユーザーへ結果返却
 ```
-
-### 特徴
-
-- **ChatCLI**: 従来の Function Calling 中心。LLM が自動的に適切なツールを選択
-- **AgentChatCLI**: Function Calling + Agent ワークフロー。両方の利点を兼ね備える
 
 システムプロンプトにより LLM はファイル検索・内容調査に `LocalCommandTool` を優先的に使用します。
 `rg`（ripgrep）が利用可能な環境では最も高速に動作します。

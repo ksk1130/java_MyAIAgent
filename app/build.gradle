@@ -69,8 +69,8 @@ tasks.withType(JavaCompile).configureEach {
 
 application {
     // Define the main class for the application.
-    // App.java が ChatCLI と AgentChatCLI の両方をサポートするエントリポイント
-    mainClass = 'org.example.App'
+    // ChatCLI が全てのエントリポイントを兼ねます
+    mainClass = 'org.example.ChatCLI'
     // Ensure JVM uses UTF-8 file.encoding so console output (Japanese) doesn't mojibake on Windows
     //applicationDefaultJvmArgs = ['-Dfile.encoding=UTF-8']
 }
@@ -296,8 +296,7 @@ tasks.register('createPortablePackage') {
         def batContent = """@echo off
 REM Launch script for MyAIAgent with embedded JRE
 REM 使い方:
-REM   run.bat chat           - ChatCLI 対話モード（従来版）
-REM   run.bat agent chat     - AgentChatCLI 対話モード（Agent対応版）
+REM   run.bat                - ChatCLI 対話モード
 REM   run.bat <message>      - 単発メッセージモード
 
 setlocal enabledelayedexpansion
@@ -329,13 +328,13 @@ for %%f in ("%LIB_DIR%\\*.jar") do (
 )
 
 REM Launch application with UTF-8 encoding
-REM メインクラスは org.example.App （ChatCLI/AgentChatCLI をルーティング）
+REM メインクラスは org.example.ChatCLI
 if "%%1"=="" (
     echo ChatCLI を対話モードで起動します...
-    "%JAVA_EXE%" -Dfile.encoding=UTF-8 -cp "!CLASSPATH!" org.example.App chat
+    "%JAVA_EXE%" -Dfile.encoding=UTF-8 -cp "!CLASSPATH!" org.example.ChatCLI
 ) else (
     echo アプリケーションを起動します: %*
-    "%JAVA_EXE%" -Dfile.encoding=UTF-8 -cp "!CLASSPATH!" org.example.App %*
+    "%JAVA_EXE%" -Dfile.encoding=UTF-8 -cp "!CLASSPATH!" org.example.ChatCLI %*
 )
 
 endlocal

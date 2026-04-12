@@ -28,7 +28,7 @@ public class FileExtractor {
      * @param keyword   検索キーワード（大文字小文字を区別しません）
      * @return マッチしたファイルパスのリスト。エラー時は空リストを返します。
      */
-    public List<String> search(
+    public List<Path> search( // 戻り値の型を String から Path に変更
             @V("directory") String directory,
             @V("keyword") String keyword) {
 
@@ -44,7 +44,7 @@ public class FileExtractor {
 
             String lowerKeyword = keyword == null ? "" : keyword.toLowerCase();
 
-            List<String> results = Files.walk(startPath)
+            List<Path> results = Files.walk(startPath) // String から Path に変更
                     .filter(Files::isRegularFile)
                     .filter(path -> {
                         try {
@@ -63,8 +63,7 @@ public class FileExtractor {
                             return false;
                         }
                     })
-                    .map(Path::toString)
-                    .collect(Collectors.toList());
+                    .collect(Collectors.toList()); // Path のリストとして収集
 
             System.out.println("  見つかったファイル数: " + results.size());
             return results;

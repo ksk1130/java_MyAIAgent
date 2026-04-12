@@ -31,13 +31,6 @@
         },
         {
             "type": "java",
-            "name": "App",
-            "request": "launch",
-            "mainClass": "org.example.App",
-            "projectName": "app"
-        },
-        {
-            "type": "java",
             "name": "ChatCLI",
             "request": "launch",
             "mainClass": "org.example.ChatCLI",

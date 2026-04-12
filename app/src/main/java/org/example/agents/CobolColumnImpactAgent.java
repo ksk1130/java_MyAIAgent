@@ -6,7 +6,6 @@ import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.V;
 import org.example.cobol.CobolDependencyAnalyzer;
-import org.example.cobol.CobolColumnAnalysisUtil;
 import org.example.tools.*;
 import org.jline.reader.LineReader;
 import org.jline.reader.LineReaderBuilder;

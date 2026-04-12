@@ -1,6 +1,5 @@
-package org.example.cobol;
+package org.example.agents;
 
-import org.example.agents.DatabaseQueryAgent;
 import java.util.*;
 
 /**
