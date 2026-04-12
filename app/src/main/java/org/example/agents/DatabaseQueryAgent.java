@@ -1,8 +1,5 @@
 package org.example.agents;
 
-import dev.langchain4j.agentic.Agent;
-import dev.langchain4j.service.V;
-
 import java.sql.*;
 import java.util.*;
 
@@ -40,14 +37,9 @@ public class DatabaseQueryAgent {
      * @param columnName カラム名（例：ZIPCODE）
      * @return 依存関係情報を含む構造化データ
      */
-    @Agent(
-        name = "DatabaseQuery",
-        description = "Query Derby DB to find column access and transitive dependencies",
-        outputKey = "dependencyInfo"
-    )
     public Map<String, Object> queryDependencies(
-        @V("tableName") String tableName,
-        @V("columnName") String columnName
+        String tableName,
+        String columnName
     ) {
         Map<String, Object> result = new HashMap<>();
 

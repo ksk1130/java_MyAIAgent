@@ -1,9 +1,6 @@
 package org.example.agents;
 
 import dev.langchain4j.agentic.Agent;
-import dev.langchain4j.agentic.AgenticServices;
-import dev.langchain4j.agentic.supervisor.SupervisorContextStrategy;
-import dev.langchain4j.agentic.supervisor.SupervisorResponseStrategy;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.service.AiServices;
@@ -31,16 +28,6 @@ import java.util.*;
  */
 public class CobolColumnImpactAgent {
 
-    /**
-     * ワークフローインタフェース：SupervisorAgent の入出力を定義
-     */
-    public interface CobolAnalysisWorkflow {
-        
-        @Agent(description = "Analyzes COBOL source code to identify column usage and generate impact report")
-        String analyze(
-            @V("userRequest") String userRequest
-        );
-    }
 
     /**
      * IntentExtractorAgent
@@ -188,87 +175,7 @@ public class CobolColumnImpactAgent {
         }
     }
 
-    /**
-     * FileScannerAgent
-     * 非AIエージェント：GrepTool を使用して高速にテーブル参照ファイルを探索
-     * 前のエージェント（IntentExtractor）の戻り値（Map<String, String>）から
-     * tableName と rootDir を @V パラメータで取得
-     */
-    public static class FileScannerAgent {
-        
-        private final GrepTool grepTool;
-        
-        public FileScannerAgent() {
-            this.grepTool = new GrepTool();
-        }
-        
-        @Agent(
-            name = "FileScanner",
-            description = "Scans COBOL files to find references to the target table",
-            outputKey = "foundFiles"
-        )
-        public List<String> scan(
-            @V("tableName") String tableName,
-            @V("cobolDir") String cobolDir
-        ) {
-            if (tableName == null || cobolDir == null) {
-                return Collections.emptyList();
-            }
-            
-            // GrepTool で COBOL ファイルを検索（cobolDir を使用）
-            String grepResult = grepTool.grepCobolFiles(cobolDir, tableName);
-            
-            // 結果をパース：ファイルパスを抽出
-            return parseGrepResult(grepResult);
-        }
-        
-        /**
-         * GrepTool の出力をパースしてファイルパスリストを抽出
-         * 
-         * 形式："C:\path\to\file.cbl:12: content" → "C:\path\to\file.cbl"
-         * Windows パス対応：最初の2文字後の最初の : をファイルパス終端と判定しない
-         */
-        private List<String> parseGrepResult(String grepResult) {
-            List<String> files = new ArrayList<>();
-            if (grepResult == null || grepResult.isEmpty()) {
-                return files;
-            }
-            
-            String[] lines = grepResult.split("\n");
-            Set<String> uniqueFiles = new HashSet<>();
-            
-            for (String line : lines) {
-                if (line == null || line.trim().isEmpty()) {
-                    continue;
-                }
-                
-                // Windows パス対応：C:\ のあとの : で分割する（最初の3文字はスキップ）
-                String filePath = null;
-                
-                // Windows パスの場合: C:\path:linenum:content
-                if (line.length() > 2 && line.charAt(1) == ':') {
-                    // Windows パス：C:\ のあとの最初の : を探す
-                    int colonIndex = line.indexOf(':', 2);
-                    if (colonIndex > 0) {
-                        filePath = line.substring(0, colonIndex);
-                    }
-                } else {
-                    // Unix パスまたはその他：最初の : で分割
-                    int colonIndex = line.indexOf(':');
-                    if (colonIndex > 0) {
-                        filePath = line.substring(0, colonIndex);
-                    }
-                }
-                
-                if (filePath != null && !filePath.isEmpty()) {
-                    uniqueFiles.add(filePath);
-                }
-            }
-            
-            files.addAll(uniqueFiles);
-            return files;
-        }
-    }
+
 
     /**
      * DependencyAnalyzerAgent
@@ -277,15 +184,10 @@ public class CobolColumnImpactAgent {
      */
     public static class DependencyAnalyzerAgent {
 
-        @Agent(
-            name = "DependencyAnalyzer",
-            description = "Runs CobolDependencyAnalyzer to rebuild dependency DB using the provided COBOL and COPY directories",
-            outputKey = "dependencyBuildInfo"
-        )
         public Map<String, Object> analyze(
-            @V("cobolDir") String cobolDir,
-            @V("copyDir") String copyDir,
-            @V("columnName") String columnName
+            String cobolDir,
+            String copyDir,
+            String columnName
         ) {
             Map<String, Object> result = new HashMap<>();
 
@@ -319,195 +221,6 @@ public class CobolColumnImpactAgent {
     }
 
     /**
-     * CobolAnalyzerAgent
-     * AI エージェント：FileScannerの結果（List<String>）を読み込み、
-     * 実際に COBOL/COPY ファイルから columnName 関連の変数を特定
-     */
-    public static class CobolAnalyzerAgent {
-        
-        private final FileReaderTool fileReaderTool;
-        private final GrepTool grepTool;
-        private final CobolColumnAnalysisUtil columnAnalysisUtil;
-        
-        public CobolAnalyzerAgent() {
-            this.fileReaderTool = new FileReaderTool();
-            this.grepTool = new GrepTool();
-            this.columnAnalysisUtil = new CobolColumnAnalysisUtil();
-        }
-        
-        @Agent(
-            name = "CobolAnalyzer",
-            description = "Analyzes COBOL code to identify variables that store the target column",
-            outputKey = "analysisResult"
-        )
-        public Map<String, Object> analyze(
-            @V("foundFiles") List<String> foundFiles,
-            @V("columnName") String columnName,
-            @V("cobolDir") String cobolDir,
-            @V("copyDir") String copyDir
-        ) {
-            Map<String, Object> analysisResult = new HashMap<>();
-            List<CobolColumnAnalysisUtil.VariableDefinition> identifiedVars = new ArrayList<>();
-            Map<String, List<CobolColumnAnalysisUtil.VariableDefinition>> fileVariables = new HashMap<>();
-            Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> fileAssignments = new HashMap<>();
-            Map<String, List<String>> fileCopyDependencies = new HashMap<>();
-            
-            // Step 1: 見つかったファイルから columnName を含む行を読み込む
-            if (foundFiles != null && !foundFiles.isEmpty()) {
-                for (String filePath : foundFiles) {
-                    try {
-                        String fileContent = fileReaderTool.readFile(filePath);
-                        CobolColumnAnalysisUtil.ColumnAnalysis columnAnalysis = columnAnalysisUtil.analyzeContent(fileContent, columnName);
-                        
-                        // COPY 句を抽出
-                        List<String> copyStatements = columnAnalysisUtil.extractCopyStatements(fileContent);
-                        if (!copyStatements.isEmpty()) {
-                            fileCopyDependencies.put(filePath, copyStatements);
-                        }
-                        
-                        if (!columnAnalysis.variables().isEmpty()) {
-                            fileVariables.put(filePath, columnAnalysis.variables());
-                            identifiedVars.addAll(columnAnalysis.variables());
-                        }
-                        if (!columnAnalysis.assignments().isEmpty()) {
-                            fileAssignments.put(filePath, columnAnalysis.assignments());
-                        }
-                    } catch (Exception e) {
-                        // ファイル読み込み失敗時はスキップ
-                    }
-                }
-            }
-            
-            // Step 2: COPY ファイルからも columnName 関連の変数定義を探す
-            // copyDir パラメータを直接使用（ユーザーが指定）
-            try {
-                String copySearchResult = grepTool.grepCobolFiles(copyDir, columnName);
-                
-                if (copySearchResult != null && !copySearchResult.isEmpty()) {
-                    List<String> copyFiles = parseGrepResults(copySearchResult);
-                    
-                    for (String copyFilePath : copyFiles) {
-                        try {
-                            CobolColumnAnalysisUtil.ColumnAnalysis columnAnalysis =
-                                columnAnalysisUtil.analyzeContent(fileReaderTool.readFile(copyFilePath), columnName);
-                            
-                            if (!columnAnalysis.variables().isEmpty()) {
-                                if (!fileVariables.containsKey(copyFilePath)) {
-                                    fileVariables.put(copyFilePath, columnAnalysis.variables());
-                                }
-                                identifiedVars.addAll(columnAnalysis.variables());
-                            }
-                            if (!columnAnalysis.assignments().isEmpty()) {
-                                fileAssignments.merge(copyFilePath, columnAnalysis.assignments(), (existing, incoming) -> {
-                                    List<CobolColumnAnalysisUtil.AssignmentOccurrence> merged = new ArrayList<>(existing);
-                                    merged.addAll(incoming);
-                                    return deduplicateAssignments(merged);
-                                });
-                            }
-                        } catch (Exception e) {
-                            // COPY ファイル読み込み失敗時もスキップ
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                // grep 実行失敗時もスキップ
-            }
-            
-            // 重複排除（VariableDefinitionの名前で）
-            Map<String, CobolColumnAnalysisUtil.VariableDefinition> uniqueMap = new LinkedHashMap<>();
-            for (CobolColumnAnalysisUtil.VariableDefinition var : identifiedVars) {
-                uniqueMap.putIfAbsent(var.name(), var);
-            }
-            
-            analysisResult.put("variables", new ArrayList<>(uniqueMap.values()));
-            analysisResult.put("fileVariables", fileVariables);
-            analysisResult.put("fileAssignments", normalizeAssignmentMap(fileAssignments));
-            analysisResult.put("fileCopyDependencies", fileCopyDependencies);
-            
-            return analysisResult;
-        }
-
-        /**
-         * ファイル別の代入一覧を重複排除して返します。
-         *
-         * @param fileAssignments ファイル別代入一覧
-         * @return 正規化後のファイル別代入一覧
-         */
-        private Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> normalizeAssignmentMap(
-            Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> fileAssignments) {
-            Map<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> normalized = new HashMap<>();
-            for (Map.Entry<String, List<CobolColumnAnalysisUtil.AssignmentOccurrence>> entry : fileAssignments.entrySet()) {
-                List<CobolColumnAnalysisUtil.AssignmentOccurrence> deduplicated = deduplicateAssignments(entry.getValue());
-                if (!deduplicated.isEmpty()) {
-                    normalized.put(entry.getKey(), deduplicated);
-                }
-            }
-            return normalized;
-        }
-
-        /**
-         * 同一変数・同一行番号・同一代入種別・同一行内容の重複を取り除きます。
-         *
-         * @param assignments 代入一覧
-         * @return 重複排除後の一覧
-         */
-        private List<CobolColumnAnalysisUtil.AssignmentOccurrence> deduplicateAssignments(
-            List<CobolColumnAnalysisUtil.AssignmentOccurrence> assignments) {
-            Map<String, CobolColumnAnalysisUtil.AssignmentOccurrence> uniqueAssignments = new LinkedHashMap<>();
-            for (CobolColumnAnalysisUtil.AssignmentOccurrence assignment : assignments) {
-                String key = assignment.variableName() + "@" + assignment.lineNumber() + "@"
-                    + assignment.statementType() + "@" + assignment.sourceLine();
-                uniqueAssignments.putIfAbsent(key, assignment);
-            }
-            return new ArrayList<>(uniqueAssignments.values());
-        }
-
-        /**
-         * Grep 結果をファイルパスのリストに変換
-         * 形式："C:\path\file.cbl:line:content" → ["C:\path\file.cbl", ...]
-         * Windows パス対応
-         */
-        private List<String> parseGrepResults(String grepOutput) {
-            List<String> files = new ArrayList<>();
-            Set<String> uniqueFiles = new HashSet<>();
-            
-            if (grepOutput == null || grepOutput.isBlank()) {
-                return files;
-            }
-            
-            String[] lines = grepOutput.split("\n");
-            for (String line : lines) {
-                if (line == null || line.trim().isEmpty()) {
-                    continue;
-                }
-                
-                String filePath = null;
-                
-                // Windows パス対応：C:\ のあとの最初の : を探す
-                if (line.length() > 2 && line.charAt(1) == ':') {
-                    int colonIndex = line.indexOf(':', 2);
-                    if (colonIndex > 0) {
-                        filePath = line.substring(0, colonIndex);
-                    }
-                } else {
-                    // Unix パス：最初の : で分割
-                    int colonIndex = line.indexOf(':');
-                    if (colonIndex > 0) {
-                        filePath = line.substring(0, colonIndex);
-                    }
-                }
-                
-                if (filePath != null && !filePath.isEmpty()) {
-                    uniqueFiles.add(filePath);
-                }
-            }
-            
-            files.addAll(uniqueFiles);
-            return files;
-        }
-    }
-
-    /**
      * ResultSaverAgent
      * 非AIエージェント：FileWriterTool を使用して結果をMarkdownで保存
      * CobolAnalyzerの戻り値（Map<String, Object>）と
@@ -524,16 +237,11 @@ public class CobolColumnImpactAgent {
             this.dbQueryAgent = new DatabaseQueryAgent();
         }
         
-        @Agent(
-            name = "ResultSaver",
-            description = "Saves the integrated analysis result (DB findings + variable definitions) to Markdown",
-            outputKey = "saveResult"
-        )
         public String save(
-            @V("tableName") String tableName,
-            @V("columnName") String columnName,
-            @V("dependencyInfo") Map<String, Object> dependencyInfo,
-            @V("dependencyBuildInfo") Map<String, Object> dependencyBuildInfo
+            String tableName,
+            String columnName,
+            Map<String, Object> dependencyInfo,
+            Map<String, Object> dependencyBuildInfo
         ) {
             // DB から変数定義と代入文を取得（ローカル解析は不要）
             List<Map<String, String>> variableDefinitions = dbQueryAgent.queryVariableDefinitions(columnName);
@@ -798,35 +506,7 @@ public class CobolColumnImpactAgent {
         }
     }
 
-    /**
-     * SupervisorAgent の構築・実行
-     */
-    public static CobolAnalysisWorkflow build(ChatModel chatModel) {
-        IntentExtractorAgent intentExtractor = new IntentExtractorAgent(chatModel);
-        DependencyAnalyzerAgent dependencyAnalyzer = new DependencyAnalyzerAgent();
-        FileScannerAgent fileScanner = new FileScannerAgent();
-        CobolAnalyzerAgent cobolAnalyzer = new CobolAnalyzerAgent();
-        DatabaseQueryAgent dbQueryAgent = new DatabaseQueryAgent();
-        ResultSaverAgent resultSaver = new ResultSaverAgent();
-        
-        return AgenticServices.supervisorBuilder(CobolAnalysisWorkflow.class)
-            .chatModel(chatModel)
-            .subAgents(intentExtractor, dependencyAnalyzer, fileScanner, cobolAnalyzer, dbQueryAgent, resultSaver)
-            .responseStrategy(SupervisorResponseStrategy.SUMMARY)
-            .contextGenerationStrategy(SupervisorContextStrategy.CHAT_MEMORY_AND_SUMMARIZATION)
-            .supervisorContext(
-                "You are analyzing COBOL source code to understand the impact of a column type change. " +
-                "Follow these steps in order:\n" +
-                "1. Extract table name, column name, and directory from the request\n" +
-                "2. Run DependencyAnalyzer to rebuild the Derby dependency database using cobolDir and copyDir\n" +
-                "3. Use DatabaseQuery to search the refreshed dependency database\n" +
-                "4. Scan COBOL files for table references\n" +
-                "5. Analyze COBOL code to identify variables that store the column and the assignment statements to those variables\n" +
-                "6. Save the analysis result as Markdown"
-            )
-            .maxAgentsInvocations(10)
-            .build();
-    }
+
 
     /**
      * Windows パスをそのまま入力できるようにした JLine パーサを返します。
@@ -908,57 +588,33 @@ public class CobolColumnImpactAgent {
                           ", copyDir=" + extractedParams.get("copyDir"));
         System.out.println();
         
-        // 修正版 Supervisor を構築・実行
-        CobolAnalysisWorkflow workflow = buildModifiedWorkflow(chatModel, extractedParams);
+        System.out.println("Step 1: Rebuilding Dependency DB...");
+        DependencyAnalyzerAgent dependencyAnalyzer = new DependencyAnalyzerAgent();
+        Map<String, Object> buildInfo = dependencyAnalyzer.analyze(
+            extractedParams.get("cobolDir"),
+            extractedParams.get("copyDir"),
+            extractedParams.get("columnName")
+        );
         
-        String result = workflow.analyze(userRequest);
+        System.out.println("Step 2: Querying Dependencies...");
+        DatabaseQueryAgent dbQueryAgent = new DatabaseQueryAgent();
+        Map<String, Object> dependencyInfo = dbQueryAgent.queryDependencies(
+            extractedParams.get("tableName"),
+            extractedParams.get("columnName")
+        );
+        
+        System.out.println("Step 3: Saving Report...");
+        ResultSaverAgent resultSaver = new ResultSaverAgent();
+        String result = resultSaver.save(
+            extractedParams.get("tableName"),
+            extractedParams.get("columnName"),
+            dependencyInfo,
+            buildInfo
+        );
         
         System.out.println("=== Analysis Result ===");
         System.out.println(result);
     }
-    
-    /**
-     * 修正版 build メソッド：IntentExtractor をスキップして直接ファイルスキャンを開始
-     */
-    private static CobolAnalysisWorkflow buildModifiedWorkflow(ChatModel chatModel, 
-                                                                Map<String, String> extractedParams) {
-        DependencyAnalyzerAgent dependencyAnalyzer = new DependencyAnalyzerAgent();
-        FileScannerAgent fileScanner = new FileScannerAgent();
-        CobolAnalyzerAgent cobolAnalyzer = new CobolAnalyzerAgent();
-        ResultSaverAgent resultSaver = new ResultSaverAgent();
-        DatabaseQueryAgent dbQueryAgent = new DatabaseQueryAgent();
-        
-        // ユーザーから取得した抽出パラメータを使用
-        String cobolDir = extractedParams.get("cobolDir");
-        String copyDir = extractedParams.get("copyDir");
-        String tableName = extractedParams.get("tableName");
-        String columnName = extractedParams.get("columnName");
-        
-        return AgenticServices.supervisorBuilder(CobolAnalysisWorkflow.class)
-            .chatModel(chatModel)
-            .subAgents(dependencyAnalyzer, fileScanner, cobolAnalyzer, dbQueryAgent, resultSaver)
-            .responseStrategy(SupervisorResponseStrategy.SUMMARY)
-            .contextGenerationStrategy(SupervisorContextStrategy.CHAT_MEMORY_AND_SUMMARIZATION)
-            .supervisorContext(
-                "You are analyzing COBOL source code and dependencies to understand the impact of a column type change.\n" +
-                "=== TARGET INFORMATION ===\n" +
-                "Table Name: " + tableName + "\n" +
-                "Column Name: " + columnName + "\n" +
-                "COBOL Directory: " + cobolDir + "\n" +
-                "COPY Directory: " + copyDir + "\n" +
-                "=== TASK STEPS ===\n" +
-                "1. Use DependencyAnalyzer to rebuild the Derby dependency database with COBOL directory '" + cobolDir +
-                "' and COPY directory '" + copyDir + "'\n" +
-                "2. Use DatabaseQuery to search the refreshed Derby dependency database for programs accessing '" + tableName + "." + columnName + "'\n" +
-                "   - Find DIRECT access (programs directly accessing the column)\n" +
-                "   - Find INDIRECT access (programs calling other programs that access the column)\n" +
-                "3. Use FileScanner to scan COBOL files in directory '" + cobolDir + 
-                "' for references to table '" + tableName + "'\n" +
-                "4. Use CobolAnalyzer to identify variables that store column '" + columnName + 
-                "' in the found files and COPY files (directory: '" + copyDir + "')\n" +
-                "5. Use ResultSaver to save the integrated analysis result (DB findings + variable definitions) as Markdown"
-            )
-            .maxAgentsInvocations(15)
-            .build();
-    }
 }
+    
+
